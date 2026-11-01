@@ -1,27 +1,36 @@
-# Sử dụng image chính thức của Playwright (đã có sẵn Chromium và các thư viện hệ thống)
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# Dùng bản Python slim cơ bản để giảm dung lượng
+FROM python:3.11-slim
 
-# Cài đặt thêm các gói cần thiết cho màn hình ảo và VNC
+# Cài đặt môi trường không tương tác
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Cài đặt các gói hệ thống cần thiết cho màn hình ảo và VNC
 RUN apt-get update && apt-get install -y \
     xvfb \
     x11vnc \
     novnc \
+    curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Cài đặt các thư viện Python
+# Copy và cài đặt thư viện Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy toàn bộ code vào container
+# Cài đặt Chromium và các thư viện phụ thuộc của Playwright (Gộp chung 1 lệnh để tối ưu)
+RUN playwright install --with-deps chromium
+
+# Copy code
 COPY . .
 
-# Cấp quyền thực thi cho file start.sh
+# Phân quyền cho start.sh
 RUN chmod +x start.sh
 
-# Khai báo cổng (dự phòng)
+# Mở cổng 8080
 EXPOSE 8080
 
-# Chạy ứng dụng
+# Chạy tool
 CMD ["/app/start.sh"]
