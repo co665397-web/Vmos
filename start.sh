@@ -10,5 +10,8 @@ export DISPLAY=:99
 # Khởi động VNC Server
 x11vnc -display :99 -nopw -listen 0.0.0.0 -forever -shared &
 
-# Chạy FastAPI (Tự động nhận cổng ${PORT} do Cloady cấp, nếu không có thì mặc định 8080)
+# THÊM DÒNG NÀY: Đợi 3 giây để VNC khởi động xong hoàn toàn
+sleep 3
+
+# Chạy FastAPI (Tự động nhận cổng)
 exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
