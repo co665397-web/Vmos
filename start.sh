@@ -1,7 +1,6 @@
 #!/bin/bash
 export PYTHONUNBUFFERED=1
 
-# Di chuyển vào thư mục chứa code
 cd /app
 
 # 1. Khởi động màn hình ảo Xvfb
@@ -11,5 +10,5 @@ export DISPLAY=:99
 # 2. Khởi động VNC Server
 x11vnc -display :99 -nopw -listen 0.0.0.0 -forever -shared &
 
-# 3. Khởi động FastAPI
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+# 3. Khởi động FastAPI (TỰ ĐỘNG NHẬN CỔNG TỪ CLOADY)
+exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
