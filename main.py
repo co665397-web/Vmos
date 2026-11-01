@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
+# Tắt cảnh báo SSL
 urllib3.disable_warnings(InsecureRequestWarning)
 
 app = FastAPI()
@@ -17,6 +18,7 @@ app = FastAPI()
 # Gắn thư mục noVNC tĩnh để load giao diện VNC
 app.mount("/vnc", StaticFiles(directory="/usr/share/novnc", html=True), name="static")
 
+# Trạng thái hệ thống
 state = {
     "status": "idle",  # idle, running, success, error_ip
     "email": "",
@@ -183,7 +185,6 @@ async def run_tool():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    # iframe trỏ tới /vnc/vnc.html, đường dẫn websocket là /vncproxy
     return """
     <!DOCTYPE html>
     <html lang="vi">
@@ -232,7 +233,7 @@ async def index():
 
         <div class="browser">
             <!-- Load giao diện VNC và kết nối websocket qua proxy /vncproxy -->
-            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&path=vncproxy"></iframe>
+            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&path=/vncproxy"></iframe>
         </div>
 
         <script>
@@ -298,13 +299,13 @@ async def api_status():
     return state
 
 # ==========================================
-# PROXY WEBSOCKET TỰ VIẾT (Thay thế websockify)
+# PROXY WEBSOCKET TỰ VIẾT (Chuyển tiếp VNC)
 # ==========================================
 @app.websocket("/vncproxy")
 async def websocket_proxy(websocket: WebSocket):
     await websocket.accept()
     try:
-        # Kết nối trực tiếp tới VNC Server ở cổng 5900
+        # Kết nối trực tiếp tới VNC Server ở cổng 5900 nội bộ
         reader, writer = await asyncio.open_connection('127.0.0.1', 5900)
 
         async def ws_to_tcp():
