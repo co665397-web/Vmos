@@ -23,7 +23,6 @@ state = {
     "message": "Chưa chạy"
 }
 
-# Hàm tạo email 10 phút
 def create_temp_email():
     try:
         r = requests.get("https://api.mail.tm/domains", verify=False)
@@ -42,7 +41,6 @@ def create_temp_email():
     except Exception:
         return None, None
 
-# Hàm đọc OTP từ mail 10 phút
 def get_otp_from_temp_mail(email, password, timeout=120):
     start_time = time.time()
     try:
@@ -89,7 +87,7 @@ async def run_tool():
         return
         
     state["email"] = email
-    state["message"] = "Đang khởi động trình duyệt ảo (có thể mất 15-20s)..."
+    state["message"] = "Đang khởi động điện thoại ảo (15-20s)..."
 
     async with async_playwright() as p:
         try:
@@ -97,19 +95,24 @@ async def run_tool():
                 headless=False, 
                 args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             )
-            state["message"] = "Đã mở trình duyệt. Đang truy cập VMOS..."
+            state["message"] = "Đang truy cập VMOS..."
             
-            context = await browser.new_context(viewport={"width": 1280, "height": 720})
+            # GIẢ LẬP ĐIỆN THOẠI (Mobile Emulation)
+            context = await browser.new_context(
+                viewport={"width": 450, "height": 800},
+                user_agent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+                is_mobile=True,
+                has_touch=True,
+                device_scale_factor=2
+            )
             await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = await context.new_page()
 
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             
-            # Chờ nút đăng nhập hiện ra để chắc chắn web đã load xong
             await page.wait_for_selector('button:has-text("Login/Register"), button:has-text("Đăng nhập/Đăng ký")', timeout=20000)
-            await page.wait_for_timeout(2000) # Chờ popup hiện hoàn toàn
+            await page.wait_for_timeout(1000)
 
-            # CẢI TIẾN: Dùng Javascript đánh lừa React để điền email
             state["message"] = "Đang tự động điền email..."
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[placeholder*="email" i]');
@@ -124,14 +127,12 @@ async def run_tool():
                     input.blur();
                 }}
             }}''')
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(500)
 
-            # Tự động tích điều khoản
             try:
                 await page.locator('input[type="checkbox"]').first.click(force=True)
             except: pass
             
-            # Click nút Đăng ký
             state["message"] = "Đang bấm nút Đăng ký..."
             try:
                 await page.locator('button:has-text("Login/Register")').first.click(force=True)
@@ -141,11 +142,10 @@ async def run_tool():
                 except:
                     await page.keyboard.press("Enter")
 
-            state["message"] = "Hãy giải Captcha trên màn hình (Nên xoay ngang điện thoại). Tool đang canh mã OTP..."
+            state["message"] = "Hãy giải Captcha trên màn hình (Chạm để gõ)."
             otp_found = False
             start_wait = time.time()
 
-            # Vòng lặp chờ OTP
             while time.time() - start_wait < 300:
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
@@ -248,8 +248,10 @@ async def index():
             body { margin: 0; padding: 0; height: 100vh; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
             
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
-            .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%;}
-            iframe { flex: 1; border: none; width: 100%; height: 100%; object-fit: contain; }
+            .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%; justify-content: center; align-items: center;}
+            
+            /* Căn giữa màn hình dọc điện thoại */
+            iframe { border: none; width: 100%; max-width: 450px; height: 100%; max-height: 800px; background: #000; box-shadow: 0 0 20px rgba(0,0,0,1);}
             
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
             
@@ -271,6 +273,8 @@ async def index():
                 .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
                 .sidebar.active { left: 0; }
                 .browser { width: 100%; }
+                /* Trên mobile, ép iframe full màn hình */
+                iframe { max-width: 100%; max-height: 100%; }
             }
         </style>
     </head>
@@ -281,9 +285,7 @@ async def index():
             <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool Auto</h2>
             
             <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
-                Tool sẽ tự động tạo Mail 10 phút, tự động lấy OTP. Chỉ cần bấm nút và giải Captcha.
-                <br><br>
-                <b>💡 Mẹo:</b> Hãy xoay ngang điện thoại để màn hình VNC to hơn, dễ giải Captcha hơn!
+                <b>💡 Hướng dẫn:</b> Màn hình bên phải đã được giả lập thành điện thoại. Bạn chỉ cần chạm trực tiếp để gõ Captcha.
             </div>
 
             <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
@@ -306,7 +308,8 @@ async def index():
         </div>
 
         <div class="browser">
-            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy"></iframe>
+            <!-- Thêm view_only=0 và resize=scale -->
+            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy&view_only=0"></iframe>
         </div>
 
         <script>
