@@ -1,29 +1,24 @@
-FROM python:3.11-slim
+# Sử dụng image chính thức của Playwright (đã có sẵn Chromium và các thư viện hệ thống)
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
+# Cài đặt thêm các gói cần thiết cho màn hình ảo và VNC
 RUN apt-get update && apt-get install -y \
     xvfb \
     x11vnc \
     novnc \
-    wget \
-    curl \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libgbm1 \
-    libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Cài đặt các thư viện Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
-RUN playwright install-deps
 
-# Copy toàn bộ file vào /app
+# Copy toàn bộ code vào container
 COPY . .
 
-# Cấp quyền chạy cho start.sh
+# Cấp quyền thực thi cho file start.sh
 RUN chmod +x start.sh
 
+# Chạy ứng dụng
 CMD ["/app/start.sh"]
