@@ -8,7 +8,6 @@ from fastapi import FastAPI, BackgroundTasks, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
 
 urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -68,11 +67,11 @@ async def run_tool():
         return
 
     state["email"] = email
-    state["message"] = "Đang khởi động trình duyệt ảo (có thể mất 10-20s)..."
+    state["message"] = "Đang khởi động trình duyệt ảo (có thể mất 15s)..."
 
     async with async_playwright() as p:
         try:
-            # Thêm các cờ tối ưu RAM cho môi trường 1GB
+            # Các cờ tối ưu RAM cho Cloady 1GB
             browser = await p.chromium.launch(
                 headless=False, 
                 args=[
@@ -86,8 +85,11 @@ async def run_tool():
             state["message"] = "Đã mở trình duyệt. Đang truy cập VMOS..."
             
             context = await browser.new_context(viewport={"width": 1280, "height": 720})
+            
+            # Script chống phát hiện bot có sẵn (thay thế playwright-stealth)
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
             page = await context.new_page()
-            await Stealth().use_async(page)
 
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
