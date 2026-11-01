@@ -4,16 +4,18 @@ import time
 import requests
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, WebSocket
 from fastapi.responses import HTMLResponse
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+import websockets
 
+# Tắt cảnh báo SSL
 urllib3.disable_warnings(InsecureRequestWarning)
 
 app = FastAPI()
 
-# Trạng thái toàn cục của tool
+# Biến lưu trữ trạng thái toàn cục
 state = {
     "status": "idle",  # idle, running, success, error_ip
     "email": "",
@@ -57,7 +59,7 @@ def get_otp(email, password):
     return None
 
 async def run_tool():
-    """Hàm chạy ngầm của Playwright, điều khiển trình duyệt trên màn hình ảo"""
+    """Hàm chạy ngầm của Playwright"""
     global state
     state["status"] = "running"
     state["message"] = "Đang tạo email..."
@@ -71,7 +73,7 @@ async def run_tool():
     state["email"] = email
 
     async with async_playwright() as p:
-        # headless=False để trình duyệt hiển thị lên màn hình ảo (Xvfb)
+        # BẮT BUỘC headless=False để hiện lên noVNC
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = await browser.new_context(viewport={"width": 1280, "height": 720})
         page = await context.new_page()
@@ -83,7 +85,7 @@ async def run_tool():
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
 
-            # Tự động điền email
+            # Tự động điền Email
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[type="text"]');
                 if(input) {{
@@ -106,11 +108,9 @@ async def run_tool():
             start_wait = time.time()
 
             while time.time() - start_wait < 300:  # Chờ tối đa 5 phút
-                # Kiểm tra ô nhập OTP
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
                     break
-                # Kiểm tra lỗi IP
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn. Vui lòng tự bật VPN và thao tác thủ công."
@@ -126,6 +126,7 @@ async def run_tool():
             otp = get_otp(email, password)
 
             if otp:
+                # Điền OTP
                 otp_inputs = page.locator('input[maxlength="1"]')
                 if await otp_inputs.count() > 0:
                     for i in range(6):
@@ -138,47 +139,60 @@ async def run_tool():
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(7000)
 
-                # Tạo máy & Lấy link
-                await page.locator('button:has-text("Claim now")').first.click(force=True)
-                await page.wait_for_timeout(3000)
+                # Xử lý popup Trial Granted
+                try:
+                    view_now = page.locator('button:has-text("View now")')
+                    if await view_now.count() > 0:
+                        await view_now.first.click(force=True)
+                        await page.wait_for_timeout(4000)
+                except:
+                    pass
 
-                if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
-                    state["status"] = "error_ip"
-                    state["message"] = "IP đã bị chặn khi mua máy."
-                    return
+                # Tạo máy
+                state["message"] = "Đang thử nhận máy ảo..."
+                claim_btn = page.locator('button:has-text("Claim now")')
+                if await claim_btn.count() > 0:
+                    await claim_btn.first.click(force=True)
+                    await page.wait_for_timeout(3000)
 
-                await page.wait_for_timeout(10000)
-                await page.locator('text="Máy đám mây của tôi"').first.click(force=True)
-                await page.wait_for_timeout(15000)  # Chờ máy khởi tạo
+                    if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
+                        state["status"] = "error_ip"
+                        state["message"] = "IP đã bị chặn khi mua máy."
+                        return
 
-                # Mở bánh răng & Lấy link
-                await page.evaluate('''() => {
-                    let els = Array.from(document.querySelectorAll('svg, i, span, path, div'));
-                    let gear = els.find(el => (el.getAttribute('class') || '').toLowerCase().includes('setting'));
-                    if (gear) gear.click();
-                }''')
-                await page.wait_for_timeout(2000)
-                await page.evaluate('''() => {
-                    let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === 'Chia sẻ máy đám mây');
-                    if (el) el.click();
-                }''')
-                await page.wait_for_timeout(3000)
+                    # Chờ máy khởi tạo
+                    await page.wait_for_timeout(12000)
+                    await page.locator('text="Máy đám mây của tôi"').first.click(force=True)
+                    await page.wait_for_timeout(15000)
 
-                link_in = page.locator('input[readonly]')
-                if await link_in.count() > 0:
-                    state["link"] = await link_in.first.input_value()
-                    state["status"] = "success"
-                    state["message"] = "Tạo máy thành công!"
-                else:
-                    state["status"] = "idle"
-                    state["message"] = "Không lấy được link chia sẻ."
+                    # Mở bánh răng & Lấy link
+                    state["message"] = "Đang tìm nút Chia sẻ..."
+                    await page.evaluate('''() => {
+                        let els = Array.from(document.querySelectorAll('svg, i, span, path, div'));
+                        let gear = els.find(el => (el.getAttribute('class') || '').toLowerCase().includes('setting'));
+                        if (gear) gear.click();
+                    }''')
+                    await page.wait_for_timeout(2000)
+                    await page.evaluate('''() => {
+                        let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === 'Chia sẻ máy đám mây');
+                        if (el) el.click();
+                    }''')
+                    await page.wait_for_timeout(3000)
+
+                    link_in = page.locator('input[readonly]')
+                    if await link_in.count() > 0:
+                        state["link"] = await link_in.first.input_value()
+                        state["status"] = "success"
+                        state["message"] = "Tạo máy thành công!"
+                    else:
+                        state["status"] = "idle"
+                        state["message"] = "Không lấy được link chia sẻ."
         except Exception as e:
             state["message"] = f"Lỗi: {str(e)}"
             state["status"] = "idle"
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Giao diện web chính"""
     return """
     <!DOCTYPE html>
     <html lang="vi">
@@ -187,34 +201,36 @@ async def index():
         <title>VMOS Tool Semi-Auto</title>
         <style>
             body { display: flex; margin: 0; height: 100vh; font-family: Arial; background: #1e1e1e; color: white; }
-            .sidebar { width: 320px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; }
+            .sidebar { width: 320px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 5px rgba(0,0,0,0.5); z-index: 10;}
             .browser { flex: 1; display: flex; }
             iframe { flex: 1; border: none; width: 100%; height: 100%; }
-            button { padding: 12px; font-size: 16px; margin-top: 10px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; }
+            button { padding: 12px; font-size: 16px; margin-top: 10px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; transition: 0.2s;}
             .btn-start { background: #007bff; color: white; }
-            .btn-start:disabled { background: #555; }
-            .btn-vpn { background: #dc3545; color: white; display: none; text-decoration: none; text-align: center; margin-top: 10px; }
-            .email-box { background: #444; padding: 10px; border-radius: 5px; margin-top: 15px; display: none;}
+            .btn-start:hover { background: #0056b3; }
+            .btn-start:disabled { background: #555; cursor: not-allowed; }
+            .btn-vpn { background: #dc3545; color: white; display: none; text-decoration: none; text-align: center; margin-top: 15px; padding: 12px; border-radius: 5px; font-weight: bold;}
+            .btn-vpn:hover { background: #c82333; }
+            .email-box { background: #444; padding: 10px; border-radius: 5px; margin-top: 15px; display: none; border: 1px solid #555;}
             input { background: transparent; border: none; color: #00ff00; font-size: 16px; width: 100%; text-align: center; font-weight: bold; }
-            .message { margin-top: 15px; font-size: 14px; color: #aaa; }
-            .success-box { background: #28a745; color: white; padding: 10px; border-radius: 5px; margin-top: 15px; display: none; word-break: break-all; }
-            .success-box a { color: white; font-weight: bold; }
+            .message { margin-top: 15px; font-size: 14px; color: #aaa; line-height: 1.5; }
+            .success-box { background: #28a745; color: white; padding: 15px; border-radius: 5px; margin-top: 15px; display: none; word-break: break-all; }
+            .success-box a { color: #fff; font-weight: bold; text-decoration: underline; }
         </style>
     </head>
     <body>
         <div class="sidebar">
-            <h2 style="margin-top:0;">Bảng Điều Khiển</h2>
+            <h2 style="margin-top:0; color:#007bff;">VMOS Tool</h2>
             <button class="btn-start" id="btn-start" onclick="startTask()">Tạo Máy Ngay</button>
 
             <div class="email-box" id="email-box">
-                <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email đã tự động Copy</div>
+                <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email (Đã tự động Copy)</div>
                 <input type="text" id="email-text" readonly>
             </div>
 
             <div class="message" id="message">Chưa có tiến trình nào.</div>
 
             <div class="success-box" id="success-box">
-                <div style="font-size:12px; margin-bottom:5px;">Link chia sẻ:</div>
+                <div style="font-size:14px; margin-bottom:8px;">Link chia sẻ của bạn:</div>
                 <a id="share-link" href="#" target="_blank"></a>
             </div>
 
@@ -224,8 +240,8 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Nhúng noVNC, trỏ tới cổng 6080 của host hiện tại -->
-            <iframe id="vnc" src="//"+window.location.hostname+":6080/vnc.html?autoconnect=true&resize=scale&view_only=0"></iframe>
+            <!-- Nhúng noVNC qua Proxy của FastAPI -->
+            <iframe id="vnc" src="/vncproxy/vnc.html?autoconnect=true&resize=scale&view_only=0&path=vncproxy/websockify"></iframe>
         </div>
 
         <script>
@@ -235,37 +251,43 @@ async def index():
                 document.getElementById('btn-start').innerText = "Đang chạy...";
                 document.getElementById('success-box').style.display = 'none';
                 document.getElementById('btn-vpn').style.display = 'none';
+                document.getElementById('email-box').style.display = 'none';
 
                 await fetch('/api/start');
                 polling = setInterval(checkStatus, 2000);
             }
 
             async function checkStatus() {
-                const res = await fetch('/api/status');
-                const data = await res.json();
+                try {
+                    const res = await fetch('/api/status');
+                    const data = await res.json();
 
-                document.getElementById('message').innerText = data.message;
+                    document.getElementById('message').innerText = data.message;
 
-                if (data.email && document.getElementById('email-box').style.display === 'none') {
-                    document.getElementById('email-box').style.display = 'block';
-                    document.getElementById('email-text').value = data.email;
-                    navigator.clipboard.writeText(data.email); // Tự động copy
-                }
+                    if (data.email && document.getElementById('email-box').style.display === 'none') {
+                        document.getElementById('email-box').style.display = 'block';
+                        document.getElementById('email-text').value = data.email;
+                        // Tự động copy vào clipboard
+                        navigator.clipboard.writeText(data.email).catch(e => console.log('Lỗi copy:', e));
+                    }
 
-                if (data.status === 'success') {
-                    clearInterval(polling);
-                    document.getElementById('btn-start').disabled = false;
-                    document.getElementById('btn-start').innerText = "Tạo Máy Mới";
-                    document.getElementById('success-box').style.display = 'block';
-                    let a = document.getElementById('share-link');
-                    a.href = data.link;
-                    a.innerText = data.link;
-                }
-                else if (data.status === 'error_ip') {
-                    clearInterval(polling);
-                    document.getElementById('btn-start').disabled = false;
-                    document.getElementById('btn-start').innerText = "Thử Lại";
-                    document.getElementById('btn-vpn').style.display = 'block';
+                    if (data.status === 'success') {
+                        clearInterval(polling);
+                        document.getElementById('btn-start').disabled = false;
+                        document.getElementById('btn-start').innerText = "Tạo Máy Mới";
+                        document.getElementById('success-box').style.display = 'block';
+                        let a = document.getElementById('share-link');
+                        a.href = data.link;
+                        a.innerText = data.link;
+                    }
+                    else if (data.status === 'error_ip') {
+                        clearInterval(polling);
+                        document.getElementById('btn-start').disabled = false;
+                        document.getElementById('btn-start').innerText = "Thử Lại";
+                        document.getElementById('btn-vpn').style.display = 'block';
+                    }
+                } catch (e) {
+                    console.log("Đang chờ server...");
                 }
             }
         </script>
@@ -275,7 +297,6 @@ async def index():
 
 @app.get("/api/start")
 async def api_start(background_tasks: BackgroundTasks):
-    """API để bắt đầu tiến trình"""
     if state["status"] == "running":
         return {"msg": "Đang chạy"}
     state.update({"status": "running", "email": "", "link": "", "message": "Đang khởi tạo..."})
@@ -284,9 +305,33 @@ async def api_start(background_tasks: BackgroundTasks):
 
 @app.get("/api/status")
 async def api_status():
-    """API để frontend kiểm tra trạng thái"""
     return state
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# ==========================================
+# PROXY WEBSOCKET (Chuyển tiếp VNC qua cổng 7860)
+# ==========================================
+@app.websocket("/vncproxy/websockify")
+async def websocket_proxy(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        # Kết nối tới noVNC chạy nội bộ ở cổng 6080
+        async with websockets.connect("ws://localhost:6080/websockify") as target:
+            async def forward_to_target():
+                try:
+                    while True:
+                        msg = await websocket.receive_text()
+                        await target.send(msg)
+                except:
+                    pass
+
+            async def forward_to_client():
+                try:
+                    while True:
+                        msg = await target.recv()
+                        await websocket.send_text(msg)
+                except:
+                    pass
+
+            await asyncio.gather(forward_to_target(), forward_to_client())
+    except Exception as e:
+        print(f"VNC Proxy Error: {e}")
