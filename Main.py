@@ -6,16 +6,17 @@ import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 from fastapi import FastAPI, BackgroundTasks, WebSocket
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
-import websockets
 
-# Tắt cảnh báo SSL
 urllib3.disable_warnings(InsecureRequestWarning)
 
 app = FastAPI()
 
-# Biến lưu trữ trạng thái toàn cục
+# Gắn thư mục noVNC tĩnh để load giao diện VNC
+app.mount("/vnc", StaticFiles(directory="/usr/share/novnc", html=True), name="static")
+
 state = {
     "status": "idle",  # idle, running, success, error_ip
     "email": "",
@@ -24,7 +25,6 @@ state = {
 }
 
 def create_temp_email():
-    """Tạo email tạm thời qua Mail.TM"""
     try:
         r = requests.get("https://api.mail.tm/domains", verify=False)
         domains = [d["domain"] for d in r.json()["hydra:member"]]
@@ -38,13 +38,12 @@ def create_temp_email():
         return None, None
 
 def get_otp(email, password):
-    """Lấy mã OTP từ hộp thư Mail.TM"""
     try:
         token_req = requests.post("https://api.mail.tm/token", json={"address": email, "password": password}, verify=False)
         token = token_req.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        for _ in range(30):  # Chờ tối đa 90 giây
+        for _ in range(30):
             r = requests.get("https://api.mail.tm/messages", headers=headers, verify=False)
             msgs = r.json().get("hydra:member", [])
             if msgs:
@@ -59,7 +58,6 @@ def get_otp(email, password):
     return None
 
 async def run_tool():
-    """Hàm chạy ngầm của Playwright"""
     global state
     state["status"] = "running"
     state["message"] = "Đang tạo email..."
@@ -73,7 +71,7 @@ async def run_tool():
     state["email"] = email
 
     async with async_playwright() as p:
-        # BẮT BUỘC headless=False để hiện lên noVNC
+        # Chạy headless=False để hiển thị lên màn hình ảo Xvfb
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = await browser.new_context(viewport={"width": 1280, "height": 720})
         page = await context.new_page()
@@ -85,7 +83,6 @@ async def run_tool():
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
 
-            # Tự động điền Email
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[type="text"]');
                 if(input) {{
@@ -95,19 +92,17 @@ async def run_tool():
                 }}
             }}''')
 
-            # Tự động tích chọn điều khoản và bấm đăng ký
             try:
                 await page.locator('input[type="checkbox"]').first.check(force=True)
                 await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
             except Exception:
                 pass
 
-            # Vòng lặp chờ người dùng giải Captcha và gửi mã
             state["message"] = "Hãy giải Captcha trên màn hình. Tool đang canh mã OTP..."
             otp_found = False
             start_wait = time.time()
 
-            while time.time() - start_wait < 300:  # Chờ tối đa 5 phút
+            while time.time() - start_wait < 300:
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
                     break
@@ -126,7 +121,6 @@ async def run_tool():
             otp = get_otp(email, password)
 
             if otp:
-                # Điền OTP
                 otp_inputs = page.locator('input[maxlength="1"]')
                 if await otp_inputs.count() > 0:
                     for i in range(6):
@@ -139,7 +133,6 @@ async def run_tool():
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(7000)
 
-                # Xử lý popup Trial Granted
                 try:
                     view_now = page.locator('button:has-text("View now")')
                     if await view_now.count() > 0:
@@ -148,7 +141,6 @@ async def run_tool():
                 except:
                     pass
 
-                # Tạo máy
                 state["message"] = "Đang thử nhận máy ảo..."
                 claim_btn = page.locator('button:has-text("Claim now")')
                 if await claim_btn.count() > 0:
@@ -160,12 +152,10 @@ async def run_tool():
                         state["message"] = "IP đã bị chặn khi mua máy."
                         return
 
-                    # Chờ máy khởi tạo
                     await page.wait_for_timeout(12000)
                     await page.locator('text="Máy đám mây của tôi"').first.click(force=True)
                     await page.wait_for_timeout(15000)
 
-                    # Mở bánh răng & Lấy link
                     state["message"] = "Đang tìm nút Chia sẻ..."
                     await page.evaluate('''() => {
                         let els = Array.from(document.querySelectorAll('svg, i, span, path, div'));
@@ -193,12 +183,13 @@ async def run_tool():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    # iframe trỏ tới /vnc/vnc.html, đường dẫn websocket là /vncproxy
     return """
     <!DOCTYPE html>
     <html lang="vi">
     <head>
         <meta charset="UTF-8">
-        <title>VMOS Tool Semi-Auto</title>
+        <title>VMOS Tool</title>
         <style>
             body { display: flex; margin: 0; height: 100vh; font-family: Arial; background: #1e1e1e; color: white; }
             .sidebar { width: 320px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 5px rgba(0,0,0,0.5); z-index: 10;}
@@ -240,8 +231,8 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Nhúng noVNC qua Proxy của FastAPI -->
-            <iframe id="vnc" src="/vncproxy/vnc.html?autoconnect=true&resize=scale&view_only=0&path=vncproxy/websockify"></iframe>
+            <!-- Load giao diện VNC và kết nối websocket qua proxy /vncproxy -->
+            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&path=vncproxy"></iframe>
         </div>
 
         <script>
@@ -267,7 +258,6 @@ async def index():
                     if (data.email && document.getElementById('email-box').style.display === 'none') {
                         document.getElementById('email-box').style.display = 'block';
                         document.getElementById('email-text').value = data.email;
-                        // Tự động copy vào clipboard
                         navigator.clipboard.writeText(data.email).catch(e => console.log('Lỗi copy:', e));
                     }
 
@@ -308,30 +298,40 @@ async def api_status():
     return state
 
 # ==========================================
-# PROXY WEBSOCKET (Chuyển tiếp VNC qua cổng 7860)
+# PROXY WEBSOCKET TỰ VIẾT (Thay thế websockify)
 # ==========================================
-@app.websocket("/vncproxy/websockify")
+@app.websocket("/vncproxy")
 async def websocket_proxy(websocket: WebSocket):
     await websocket.accept()
     try:
-        # Kết nối tới noVNC chạy nội bộ ở cổng 6080
-        async with websockets.connect("ws://localhost:6080/websockify") as target:
-            async def forward_to_target():
-                try:
-                    while True:
-                        msg = await websocket.receive_text()
-                        await target.send(msg)
-                except:
-                    pass
+        # Kết nối trực tiếp tới VNC Server ở cổng 5900
+        reader, writer = await asyncio.open_connection('127.0.0.1', 5900)
 
-            async def forward_to_client():
-                try:
-                    while True:
-                        msg = await target.recv()
-                        await websocket.send_text(msg)
-                except:
-                    pass
+        async def ws_to_tcp():
+            try:
+                while True:
+                    data = await websocket.receive_bytes()
+                    writer.write(data)
+                    await writer.drain()
+            except:
+                pass
 
-            await asyncio.gather(forward_to_target(), forward_to_client())
+        async def tcp_to_ws():
+            try:
+                while True:
+                    data = await reader.read(4096)
+                    if not data:
+                        break
+                    await websocket.send_bytes(data)
+            except:
+                pass
+
+        await asyncio.gather(ws_to_tcp(), tcp_to_ws())
     except Exception as e:
-        print(f"VNC Proxy Error: {e}")
+        print("VNC Proxy Error:", e)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except:
+            pass
