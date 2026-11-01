@@ -93,14 +93,9 @@ async def run_tool():
 
     async with async_playwright() as p:
         try:
-            # Đã bỏ các cờ --single-process để tránh crash, chỉ giữ tối ưu cơ bản
             browser = await p.chromium.launch(
                 headless=False, 
-                args=[
-                    '--no-sandbox', 
-                    '--disable-dev-shm-usage', 
-                    '--disable-gpu'
-                ]
+                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             )
             state["message"] = "Đã mở trình duyệt. Đang truy cập VMOS..."
             
@@ -111,23 +106,26 @@ async def run_tool():
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
 
-            # Tự động điền email
-            await page.evaluate(f'''() => {{
-                let input = document.querySelector('input[type="text"]');
-                if(input) {{
-                    input.value = "{email}";
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-            }}''')
+            # CẢI TIẾN: Dùng fill() thay vì evaluate để React nhận diện
+            state["message"] = "Đang tự động điền email..."
+            email_input = page.locator('input[type="text"]').first
+            await email_input.fill(email)
+            await email_input.press("Enter") # Nhấn Enter cho chắc chắn
+            await page.wait_for_timeout(1000)
 
+            # Tự động tích điều khoản
             try:
                 await page.locator('input[type="checkbox"]').first.check(force=True)
+            except: pass
+            
+            # CẢI TIẾN: Click nút Đăng ký (hỗ trợ cả tiếng Anh và Việt)
+            state["message"] = "Đang bấm nút Đăng ký..."
+            try:
+                await page.locator('button:has-text("Login/Register")').first.click(force=True)
+            except:
                 await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
-            except Exception:
-                pass
 
-            state["message"] = "Hãy giải Captcha trên màn hình. Tool đang canh mã OTP..."
+            state["message"] = "Hãy giải Captcha trên màn hình (Nên xoay ngang điện thoại). Tool đang canh mã OTP..."
             otp_found = False
             start_wait = time.time()
 
@@ -147,8 +145,7 @@ async def run_tool():
                 state["status"] = "idle"
                 return
 
-            state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ mail 10 phút..."
-            # Lấy OTP
+            state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ mail..."
             otp = await asyncio.to_thread(get_otp_from_temp_mail, email, password)
 
             if otp:
@@ -160,7 +157,11 @@ async def run_tool():
                 else:
                     await page.keyboard.type(otp, delay=100)
 
-                await page.locator('button:has-text("Xác nhận")').first.click(force=True)
+                try:
+                    await page.locator('button:has-text("Confirm")').first.click(force=True)
+                except:
+                    await page.locator('button:has-text("Xác nhận")').first.click(force=True)
+
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(7000)
 
@@ -169,8 +170,7 @@ async def run_tool():
                     if await view_now.count() > 0:
                         await view_now.first.click(force=True)
                         await page.wait_for_timeout(4000)
-                except:
-                    pass
+                except: pass
 
                 state["message"] = "Đang thử nhận máy ảo..."
                 claim_btn = page.locator('button:has-text("Claim now")')
@@ -216,8 +216,7 @@ async def run_tool():
             state["status"] = "idle"
             try:
                 await browser.close()
-            except:
-                pass
+            except: pass
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -234,7 +233,9 @@ async def index():
             
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
             .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%;}
-            iframe { flex: 1; border: none; width: 100%; height: 100%; }
+            
+            /* CSS cho iframe để nó tự phóng to hết mức */
+            iframe { flex: 1; border: none; width: 100%; height: 100%; object-fit: contain; }
             
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
             
@@ -256,6 +257,7 @@ async def index():
                 .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
                 .sidebar.active { left: 0; }
                 .browser { width: 100%; }
+                /* Xoay ngang trên điện thoại sẽ thấy rõ hơn */
             }
         </style>
     </head>
@@ -266,7 +268,9 @@ async def index():
             <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool Auto</h2>
             
             <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
-                Tool sẽ tự động tạo Mail 10 phút, tự động lấy OTP, không cần bạn nhập bất cứ thứ gì. Chỉ cần bấm nút bên dưới và giải Captcha.
+                Tool sẽ tự động tạo Mail 10 phút, tự động lấy OTP. Chỉ cần bấm nút và giải Captcha.
+                <br><br>
+                <b>💡 Mẹo:</b> Hãy xoay ngang điện thoại để màn hình VNC to hơn, dễ giải Captcha hơn!
             </div>
 
             <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
@@ -306,7 +310,6 @@ async def index():
                 document.getElementById('btn-vpn').style.display = 'none';
                 document.getElementById('email-box').style.display = 'none';
 
-                // Ẩn menu trên mobile để lấy toàn màn hình VNC
                 if(window.innerWidth <= 768) {
                     document.getElementById('sidebar').classList.remove('active');
                 }
@@ -391,8 +394,7 @@ async def websocket_proxy(websocket: WebSocket):
                     data = await websocket.receive_bytes()
                     writer.write(data)
                     await writer.drain()
-            except:
-                pass
+            except: pass
 
         async def tcp_to_ws():
             try:
@@ -401,8 +403,7 @@ async def websocket_proxy(websocket: WebSocket):
                     if not data:
                         break
                     await websocket.send_bytes(data)
-            except:
-                pass
+            except: pass
 
         await asyncio.gather(ws_to_tcp(), tcp_to_ws())
     except Exception as e:
@@ -411,5 +412,4 @@ async def websocket_proxy(websocket: WebSocket):
         try:
             writer.close()
             await writer.wait_closed()
-        except:
-            pass
+        except: pass
