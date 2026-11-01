@@ -10,16 +10,19 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
 urllib3.disable_warnings(InsecureRequestWarning)
+
 app = FastAPI()
 
+# Trạng thái toàn cục của tool
 state = {
-    "status": "idle", # idle, running, success, error_ip
+    "status": "idle",  # idle, running, success, error_ip
     "email": "",
     "link": "",
     "message": "Chưa chạy"
 }
 
 def create_temp_email():
+    """Tạo email tạm thời qua Mail.TM"""
     try:
         r = requests.get("https://api.mail.tm/domains", verify=False)
         domains = [d["domain"] for d in r.json()["hydra:member"]]
@@ -29,55 +32,58 @@ def create_temp_email():
         password = "Password123!"
         requests.post("https://api.mail.tm/accounts", json={"address": email, "password": password}, verify=False)
         return email, password
-    except:
+    except Exception:
         return None, None
 
 def get_otp(email, password):
+    """Lấy mã OTP từ hộp thư Mail.TM"""
     try:
         token_req = requests.post("https://api.mail.tm/token", json={"address": email, "password": password}, verify=False)
         token = token_req.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
-        
-        for _ in range(30): # Chờ tối đa 90s
+
+        for _ in range(30):  # Chờ tối đa 90 giây
             r = requests.get("https://api.mail.tm/messages", headers=headers, verify=False)
             msgs = r.json().get("hydra:member", [])
             if msgs:
                 msg_r = requests.get(f"https://api.mail.tm/messages/{msgs[0]['id']}", headers=headers, verify=False)
                 body = str(msg_r.json().get("text", "")) + str(msg_r.json().get("html", ""))
                 match = re.search(r'\b(\d{6})\b', body)
-                if match: return match.group(1)
+                if match:
+                    return match.group(1)
             time.sleep(3)
-    except:
+    except Exception:
         pass
     return None
 
 async def run_tool():
+    """Hàm chạy ngầm của Playwright, điều khiển trình duyệt trên màn hình ảo"""
     global state
     state["status"] = "running"
     state["message"] = "Đang tạo email..."
-    
+
     email, password = create_temp_email()
     if not email:
         state["message"] = "Lỗi tạo email."
         state["status"] = "idle"
         return
-        
+
     state["email"] = email
-    
+
     async with async_playwright() as p:
-        # BẮT BUỘC headless=False để hiện lên noVNC
+        # headless=False để trình duyệt hiển thị lên màn hình ảo (Xvfb)
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = await browser.new_context(viewport={"width": 1280, "height": 720})
         page = await context.new_page()
         await Stealth().use_async(page)
 
         state["message"] = "Đang mở VMOS. Vui lòng nhìn sang màn hình bên phải để giải Captcha."
-        
+
         try:
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
-            
-            # Tự động điền Email
+
+            # Tự động điền email
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[type="text"]');
                 if(input) {{
@@ -86,25 +92,25 @@ async def run_tool():
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
             }}''')
-            
-            # Tự động bấm Đăng ký
+
+            # Tự động tích chọn điều khoản và bấm đăng ký
             try:
                 await page.locator('input[type="checkbox"]').first.check(force=True)
                 await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
-            except:
+            except Exception:
                 pass
 
-            # VÒNG LẶP THÔNG MINH: Chờ người dùng giải Captcha và bấm gửi mã
+            # Vòng lặp chờ người dùng giải Captcha và gửi mã
             state["message"] = "Hãy giải Captcha trên màn hình. Tool đang canh mã OTP..."
             otp_found = False
             start_wait = time.time()
-            
-            while time.time() - start_wait < 300: # Chờ tối đa 5 phút
-                # 1. Kiểm tra xem có ô OTP chưa
+
+            while time.time() - start_wait < 300:  # Chờ tối đa 5 phút
+                # Kiểm tra ô nhập OTP
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
                     break
-                # 2. Kiểm tra xem có thông báo chặn IP chưa
+                # Kiểm tra lỗi IP
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn. Vui lòng tự bật VPN và thao tác thủ công."
@@ -118,7 +124,7 @@ async def run_tool():
 
             state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ email..."
             otp = get_otp(email, password)
-            
+
             if otp:
                 otp_inputs = page.locator('input[maxlength="1"]')
                 if await otp_inputs.count() > 0:
@@ -127,24 +133,24 @@ async def run_tool():
                         await page.keyboard.type(otp[i], delay=100)
                 else:
                     await page.keyboard.type(otp, delay=100)
-                
+
                 await page.locator('button:has-text("Xác nhận")').first.click(force=True)
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(7000)
-                
-                # Tạo máy & Lấy Link
+
+                # Tạo máy & Lấy link
                 await page.locator('button:has-text("Claim now")').first.click(force=True)
                 await page.wait_for_timeout(3000)
-                
+
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn khi mua máy."
                     return
-                
+
                 await page.wait_for_timeout(10000)
                 await page.locator('text="Máy đám mây của tôi"').first.click(force=True)
-                await page.wait_for_timeout(15000) # Chờ máy khởi tạo
-                
+                await page.wait_for_timeout(15000)  # Chờ máy khởi tạo
+
                 # Mở bánh răng & Lấy link
                 await page.evaluate('''() => {
                     let els = Array.from(document.querySelectorAll('svg, i, span, path, div'));
@@ -157,7 +163,7 @@ async def run_tool():
                     if (el) el.click();
                 }''')
                 await page.wait_for_timeout(3000)
-                
+
                 link_in = page.locator('input[readonly]')
                 if await link_in.count() > 0:
                     state["link"] = await link_in.first.input_value()
@@ -172,6 +178,7 @@ async def run_tool():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    """Giao diện web chính"""
     return """
     <!DOCTYPE html>
     <html lang="vi">
@@ -198,14 +205,14 @@ async def index():
         <div class="sidebar">
             <h2 style="margin-top:0;">Bảng Điều Khiển</h2>
             <button class="btn-start" id="btn-start" onclick="startTask()">Tạo Máy Ngay</button>
-            
+
             <div class="email-box" id="email-box">
                 <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email đã tự động Copy</div>
                 <input type="text" id="email-text" readonly>
             </div>
 
             <div class="message" id="message">Chưa có tiến trình nào.</div>
-            
+
             <div class="success-box" id="success-box">
                 <div style="font-size:12px; margin-bottom:5px;">Link chia sẻ:</div>
                 <a id="share-link" href="#" target="_blank"></a>
@@ -217,8 +224,8 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Khung noVNC: Truyền màn hình ảo từ server về -->
-            <iframe id="vnc" src="http://localhost:6080/vnc.html?autoconnect=true&resize=scale&view_only=0"></iframe>
+            <!-- Nhúng noVNC, trỏ tới cổng 6080 của host hiện tại -->
+            <iframe id="vnc" src="//"+window.location.hostname+":6080/vnc.html?autoconnect=true&resize=scale&view_only=0"></iframe>
         </div>
 
         <script>
@@ -228,7 +235,7 @@ async def index():
                 document.getElementById('btn-start').innerText = "Đang chạy...";
                 document.getElementById('success-box').style.display = 'none';
                 document.getElementById('btn-vpn').style.display = 'none';
-                
+
                 await fetch('/api/start');
                 polling = setInterval(checkStatus, 2000);
             }
@@ -236,7 +243,7 @@ async def index():
             async function checkStatus() {
                 const res = await fetch('/api/status');
                 const data = await res.json();
-                
+
                 document.getElementById('message').innerText = data.message;
 
                 if (data.email && document.getElementById('email-box').style.display === 'none') {
@@ -253,7 +260,7 @@ async def index():
                     let a = document.getElementById('share-link');
                     a.href = data.link;
                     a.innerText = data.link;
-                } 
+                }
                 else if (data.status === 'error_ip') {
                     clearInterval(polling);
                     document.getElementById('btn-start').disabled = false;
@@ -268,13 +275,17 @@ async def index():
 
 @app.get("/api/start")
 async def api_start(background_tasks: BackgroundTasks):
-    if state["status"] == "running": return {"msg": "Đang chạy"}
+    """API để bắt đầu tiến trình"""
+    if state["status"] == "running":
+        return {"msg": "Đang chạy"}
     state.update({"status": "running", "email": "", "link": "", "message": "Đang khởi tạo..."})
     background_tasks.add_task(run_tool)
     return {"msg": "OK"}
 
 @app.get("/api/status")
-async def api_status(): return state
+async def api_status():
+    """API để frontend kiểm tra trạng thái"""
+    return state
 
 if __name__ == "__main__":
     import uvicorn
