@@ -3,9 +3,9 @@ export PYTHONUNBUFFERED=1
 
 cd /app
 
-echo "=== Khởi động Xvfb (Màn hình dọc tỷ lệ điện thoại) ==="
-# Đặt độ phân giải chuẩn điện thoại để tối ưu hiển thị
-Xvfb :99 -screen 0 540x960x24 &
+echo "=== Khởi động Xvfb (Màn hình dọc) ==="
+# Tăng lên 600x1024 để chữ và nút bấm rõ nét hơn
+Xvfb :99 -screen 0 600x1024x24 &
 export DISPLAY=:99
 sleep 2
 
