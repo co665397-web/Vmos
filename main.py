@@ -97,14 +97,14 @@ async def run_tool():
                     '--no-sandbox', 
                     '--disable-dev-shm-usage', 
                     '--disable-gpu',
-                    '--blink-settings=imagesEnabled=false' # Tắt ảnh để chạy nhanh hơn
+                    '--blink-settings=imagesEnabled=false',
+                    '--app=https://cloud.vmoscloud.com'
                 ]
             )
             state["message"] = "Đang truy cập VMOS..."
             
-            # GIẢ LẬP ĐIỆN THOẠI
             context = await browser.new_context(
-                viewport={"width": 540, "height": 960},
+                viewport={"width": 600, "height": 1024},
                 user_agent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
                 is_mobile=True,
                 has_touch=True,
@@ -113,10 +113,8 @@ async def run_tool():
             await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = await context.new_page()
 
-            await page.goto("https://cloud.vmoscloud.com", timeout=60000)
-            
-            await page.wait_for_selector('input[placeholder*="email" i]', timeout=20000)
-            await page.wait_for_timeout(1000)
+            await page.wait_for_selector('input[placeholder*="email" i]', timeout=30000)
+            await page.wait_for_timeout(1500)
 
             state["message"] = "Đang điền email..."
             await page.evaluate(f'''() => {{
@@ -126,41 +124,68 @@ async def run_tool():
                     setter.call(input, "{email}");
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    input.blur();
+                    input.blur(); // Bắt buộc blur để React cập nhật
                 }}
             }}''')
-            await page.wait_for_timeout(500)
-
-            # Tích điều khoản
-            try:
-                await page.locator('input[type="checkbox"]').first.click(force=True)
-            except: pass
             
+            # Chờ 2 giây để React kích hoạt lại nút Đăng ký
+            await page.wait_for_timeout(2000)
+
+            state["message"] = "Đang tích Điều khoản..."
+            # Ép tích checkbox bằng Javascript
+            await page.evaluate('''() => {
+                let checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                if (checkboxes.length > 0) {
+                    checkboxes[0].checked = true;
+                    checkboxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+                } else {
+                    // Nếu checkbox là thẻ div giả lập
+                    let divCb = Array.from(document.querySelectorAll('div, span')).find(el => el.className.includes('checkbox'));
+                    if(divCb) divCb.click();
+                }
+            }''')
+            await page.wait_for_timeout(1000)
+
             state["message"] = "Đang bấm nút Đăng ký..."
             
-            # SỬA LỖI CLICK NHẦM FACEBOOK: Dùng Javascript tìm chính xác nút Đăng ký
-            clicked = await page.evaluate('''() => {
-                let btns = Array.from(document.querySelectorAll('button'));
-                // Tìm nút có chữ Login/Register hoặc Đăng nhập/Đăng ký, và KHÔNG chứa chữ Facebook/Google
-                let target = btns.find(b => {
-                    let text = b.innerText.trim();
-                    return (text === 'Login/Register' || text === 'Đăng nhập/Đăng ký') && 
-                           !text.includes('Facebook') && 
-                           !text.includes('Google');
-                });
-                if (target) {
-                    target.click();
-                    return true;
-                }
-                return false;
-            }''')
-            
+            # LỚP 1: Dùng Playwright tìm theo chữ
+            clicked = False
+            try:
+                btn = page.locator('button:has-text("Login/Register"), button:has-text("Đăng nhập/Đăng ký"), div[role="button"]:has-text("Login/Register"), div[role="button"]:has-text("Đăng nhập/Đăng ký")').first
+                if await btn.count() > 0:
+                    await btn.click(force=True, timeout=3000)
+                    clicked = True
+            except: pass
+
+            # LỚP 2: Dùng Javascript tìm theo chữ (chính xác hơn)
             if not clicked:
-                # Nếu không tìm thấy chữ chính xác, thử tìm nút màu xanh dương
+                clicked = await page.evaluate('''() => {
+                    let els = Array.from(document.querySelectorAll('button, div, span, a'));
+                    let target = els.find(el => {
+                        let text = (el.innerText || el.textContent || "").trim();
+                        // Tìm nút có chữ Login/Register nhưng loại trừ nút Facebook/Google
+                        return (text === 'Login/Register' || text === 'Đăng nhập/Đăng ký') && 
+                               !text.includes('Facebook') && !text.includes('Google') &&
+                               el.offsetParent !== null; // Đảm bảo nút đang hiển thị
+                    });
+                    if (target) {
+                        target.click();
+                        return true;
+                    }
+                    return false;
+                }''')
+
+            # LỚP 3: Tìm nút màu xanh dương (thường là nút chính)
+            if not clicked:
                 await page.evaluate('''() => {
-                    let btns = Array.from(document.querySelectorAll('button'));
-                    let target = btns.find(b => b.className.includes('primary') || b.style.backgroundColor.includes('rgb'));
-                    if(target) target.click();
+                    let els = Array.from(document.querySelectorAll('button, div, span'));
+                    let target = els.find(el => {
+                        let style = window.getComputedStyle(el);
+                        let bgColor = style.backgroundColor;
+                        // Màu xanh dương đặc trưng của VMOS: rgb(24, 144, 255) hoặc tương tự
+                        return (bgColor.includes('rgb(24, 144, 255)') || bgColor.includes('rgb(0, 123, 255)')) && el.offsetParent !== null;
+                    });
+                    if (target) target.click();
                 }''')
 
             state["message"] = "Hãy giải Captcha trên màn hình. Tool đang chờ OTP..."
@@ -168,17 +193,13 @@ async def run_tool():
             start_wait = time.time()
 
             while time.time() - start_wait < 300:
-                # Nếu thấy ô OTP
                 if await page.locator('input[maxlength="1"]').count() > 0:
                     otp_found = True
                     break
-                
-                # Nếu bị chặn IP
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn. Vui lòng tự bật VPN và thao tác thủ công."
                     return
-                    
                 await asyncio.sleep(1.5)
 
             if not otp_found:
@@ -199,15 +220,14 @@ async def run_tool():
                     await page.keyboard.type(otp, delay=100)
 
                 try:
-                    await page.locator('button:has-text("Confirm")').first.click(force=True)
-                except:
-                    await page.locator('button:has-text("Xác nhận")').first.click(force=True)
+                    await page.locator('button:has-text("Confirm"), button:has-text("Xác nhận")').first.click(force=True)
+                except: pass
 
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(5000)
 
                 try:
-                    view_now = page.locator('button:has-text("View now")')
+                    view_now = page.locator('button:has-text("View now"), button:has-text("Xem ngay")')
                     if await view_now.count() > 0:
                         await view_now.first.click(force=True)
                         await page.wait_for_timeout(3000)
@@ -259,6 +279,7 @@ async def run_tool():
                 await browser.close()
             except: pass
 
+# ... (Phần HTML giữ nguyên như cũ) ...
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return """
@@ -273,10 +294,9 @@ async def index():
             body { margin: 0; padding: 0; height: 100vh; width: 100vw; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
             
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
-            .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%; }
+            .browser { flex: 1; position: relative; background: #000; width: 100%; height: 100%; }
             
-            /* SỬA LỖI MÀN HÌNH BÉ: Cho iframe chiếm toàn bộ không gian */
-            iframe { width: 100%; height: 100%; border: none; display: block; }
+            iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
             
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
             
@@ -295,9 +315,8 @@ async def index():
 
             @media (max-width: 768px) {
                 .menu-btn { display: block; }
-                .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
+                .sidebar { position: absolute; left: -100%; width: 85%; height: 100%; border-right: 1px solid #444; }
                 .sidebar.active { left: 0; }
-                .browser { width: 100%; height: 100%; }
             }
         </style>
     </head>
@@ -331,7 +350,6 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Thêm resize=scale và view_only=0 -->
             <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy&view_only=0"></iframe>
         </div>
 
@@ -417,38 +435,4 @@ async def api_start(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_tool)
     return {"msg": "OK"}
 
-@app.get("/api/status")
-async def api_status():
-    return state
-
-@app.websocket("/vncproxy")
-async def websocket_proxy(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        reader, writer = await asyncio.open_connection('127.0.0.1', 5900)
-
-        async def ws_to_tcp():
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    writer.write(data)
-                    await writer.drain()
-            except: pass
-
-        async def tcp_to_ws():
-            try:
-                while True:
-                    data = await reader.read(4096)
-                    if not data:
-                        break
-                    await websocket.send_bytes(data)
-            except: pass
-
-        await asyncio.gather(ws_to_tcp(), tcp_to_ws())
-    except Exception as e:
-        print("VNC Proxy Error:", e)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except: pass
+@app.get("/api/status"
