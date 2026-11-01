@@ -3,11 +3,9 @@ import re
 import time
 import requests
 import urllib3
-import imaplib
-import email
 import random
 from urllib3.exceptions import InsecureRequestWarning
-from fastapi import FastAPI, BackgroundTasks, WebSocket, Request
+from fastapi import FastAPI, BackgroundTasks, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
@@ -18,79 +16,91 @@ app = FastAPI()
 
 app.mount("/vnc", StaticFiles(directory="/usr/share/novnc", html=True), name="static")
 
-# Trạng thái hệ thống
 state = {
     "status": "idle",
     "email": "",
     "link": "",
-    "message": "Chưa chạy",
-    "gmail_user": "",
-    "app_password": ""
+    "message": "Chưa chạy"
 }
 
-# Hàm lấy OTP từ Gmail
-def get_otp_from_gmail(gmail_user, app_password, target_email, timeout=120):
-    print(f"[*] Đang vào Gmail để tìm mã OTP gửi đến {target_email}...")
+# Hàm tạo email 10 phút
+def create_temp_email():
+    try:
+        r = requests.get("https://api.mail.tm/domains", verify=False)
+        domains = [d["domain"] for d in r.json()["hydra:member"]]
+        domain = random.choice(domains)
+        login = f"user{random.randint(10000, 99999)}"
+        email = f"{login}@{domain}"
+        password = "Password123!"
+        
+        r = requests.post("https://api.mail.tm/accounts", json={"address": email, "password": password}, verify=False)
+        
+        if r.status_code == 201:
+            return email, password
+        else:
+            return None, None
+    except Exception:
+        return None, None
+
+# Hàm đọc OTP từ mail 10 phút
+def get_otp_from_temp_mail(email, password, timeout=120):
     start_time = time.time()
-    
+    try:
+        token_req = requests.post("https://api.mail.tm/token", json={"address": email, "password": password}, verify=False)
+        token = token_req.json()["token"]
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    except Exception:
+        return None
+
     while time.time() - start_time < timeout:
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
-            mail.login(gmail_user, app_password)
-            mail.select("inbox")
+            r = requests.get("https://api.mail.tm/messages", headers=headers, verify=False)
+            data = r.json()
+            messages = data.get("hydra:member", []) if isinstance(data, dict) else data
 
-            # Tìm 10 email mới nhất
-            status, messages = mail.search(None, 'ALL')
-            if status == 'OK':
-                mail_ids = messages[0].split()
-                if mail_ids:
-                    for mail_id in reversed(mail_ids[-10:]):
-                        status, data = mail.fetch(mail_id, '(RFC822)')
-                        if status == 'OK':
-                            msg = email.message_from_bytes(data[0][1])
-                            to_header = msg.get("To", "")
-                            if target_email.split("@")[0] not in to_header and target_email not in to_header:
-                                continue 
-
-                            body = ""
-                            if msg.is_multipart():
-                                for part in msg.walk():
-                                    if part.get_content_type() in ["text/plain", "text/html"]:
-                                        try:
-                                            body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                                        except: pass
-                            else:
-                                body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-
-                            otp_match = re.search(r'\b(\d{6})\b', body)
-                            if otp_match:
-                                otp_code = otp_match.group(1)
-                                print(f"[✔] Đã tìm thấy mã OTP: {otp_code}")
-                                mail.logout()
-                                return otp_code
-            mail.logout()
-        except Exception as e:
-            print(f"[!] Lỗi khi đọc Gmail: {e}")
+            if messages:
+                msg_id = messages[0]["id"]
+                msg_r = requests.get(f"https://api.mail.tm/messages/{msg_id}", headers=headers, verify=False)
+                msg_data = msg_r.json()
+                
+                raw_text = msg_data.get("text", "")
+                raw_html = msg_data.get("html", "")
+                if isinstance(raw_text, list): raw_text = "".join(raw_text)
+                if isinstance(raw_html, list): raw_html = "".join(raw_html)
+                
+                body = str(raw_text) + str(raw_html)
+                otp_match = re.search(r'\b(\d{6})\b', body)
+                if otp_match:
+                    return otp_match.group(1)
+        except Exception:
+            pass
         time.sleep(3)
     return None
 
-async def run_tool(gmail_user, app_password):
+async def run_tool():
     global state
     state["status"] = "running"
+    state["message"] = "Đang tạo email 10 phút..."
     
-    # Tạo email Gmail + ngẫu nhiên
-    email_prefix, email_domain = gmail_user.split("@")
-    random_suffix = random.randint(10000, 99999)
-    target_email = f"{email_prefix}+{random_suffix}@{email_domain}"
-    
-    state["email"] = target_email
-    state["message"] = f"Đang tạo email: {target_email}. Đang khởi động trình duyệt..."
+    email, password = create_temp_email()
+    if not email:
+        state["message"] = "Lỗi tạo email 10 phút."
+        state["status"] = "idle"
+        return
+        
+    state["email"] = email
+    state["message"] = "Đang khởi động trình duyệt ảo (có thể mất 15-20s)..."
 
     async with async_playwright() as p:
         try:
+            # Đã bỏ các cờ --single-process để tránh crash, chỉ giữ tối ưu cơ bản
             browser = await p.chromium.launch(
                 headless=False, 
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process', '--no-zygote']
+                args=[
+                    '--no-sandbox', 
+                    '--disable-dev-shm-usage', 
+                    '--disable-gpu'
+                ]
             )
             state["message"] = "Đã mở trình duyệt. Đang truy cập VMOS..."
             
@@ -101,11 +111,11 @@ async def run_tool(gmail_user, app_password):
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
 
-            # Điền email
+            # Tự động điền email
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[type="text"]');
                 if(input) {{
-                    input.value = "{target_email}";
+                    input.value = "{email}";
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
@@ -121,6 +131,7 @@ async def run_tool(gmail_user, app_password):
             otp_found = False
             start_wait = time.time()
 
+            # Vòng lặp chờ OTP
             while time.time() - start_wait < 300:
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
@@ -136,9 +147,9 @@ async def run_tool(gmail_user, app_password):
                 state["status"] = "idle"
                 return
 
-            state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ Gmail..."
-            # Chạy hàm lấy OTP trong một luồng riêng để không block event loop
-            otp = await asyncio.to_thread(get_otp_from_gmail, gmail_user, app_password, target_email)
+            state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ mail 10 phút..."
+            # Lấy OTP
+            otp = await asyncio.to_thread(get_otp_from_temp_mail, email, password)
 
             if otp:
                 otp_inputs = page.locator('input[maxlength="1"]')
@@ -199,7 +210,7 @@ async def run_tool(gmail_user, app_password):
                         state["message"] = "Không lấy được link chia sẻ."
             else:
                 state["status"] = "idle"
-                state["message"] = "Không tìm thấy OTP trong Gmail. Vui lòng kiểm tra lại App Password."
+                state["message"] = "Không tìm thấy OTP trong mail 10 phút."
         except Exception as e:
             state["message"] = f"Lỗi Playwright: {str(e)}"
             state["status"] = "idle"
@@ -216,22 +227,16 @@ async def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>VMOS Tool Mobile</title>
+        <title>VMOS Tool Auto</title>
         <style>
             * { box-sizing: border-box; }
             body { margin: 0; padding: 0; height: 100vh; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
             
-            /* Sidebar mặc định trên PC */
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
             .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%;}
             iframe { flex: 1; border: none; width: 100%; height: 100%; }
             
-            /* Nút Menu trên mobile */
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
-            
-            /* Form styles */
-            label { font-size: 13px; color: #aaa; margin-top: 10px; display: block;}
-            input[type="text"], input[type="password"] { width: 100%; padding: 10px; margin-top: 5px; border-radius: 5px; border: 1px solid #555; background: #444; color: #00ff00; font-weight: bold;}
             
             button.btn-start { padding: 12px; font-size: 16px; margin-top: 20px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; background: #007bff; color: white; transition: 0.2s;}
             button.btn-start:hover { background: #0056b3; }
@@ -240,13 +245,12 @@ async def index():
             .btn-vpn { background: #dc3545; color: white; display: none; text-decoration: none; text-align: center; margin-top: 15px; padding: 12px; border-radius: 5px; font-weight: bold;}
             
             .email-box { background: #444; padding: 10px; border-radius: 5px; margin-top: 15px; display: none; border: 1px solid #555;}
-            .email-box input { border: none; background: transparent; text-align: center;}
+            .email-box input { border: none; background: transparent; text-align: center; color: #00ff00; font-weight: bold; width: 100%; font-size: 16px;}
             
             .message { margin-top: 15px; font-size: 14px; color: #ffc107; line-height: 1.5; padding: 10px; background: rgba(255,193,7,0.1); border-radius: 5px;}
             .success-box { background: #28a745; color: white; padding: 15px; border-radius: 5px; margin-top: 15px; display: none; word-break: break-all; }
             .success-box a { color: #fff; font-weight: bold; text-decoration: underline; }
 
-            /* Giao diện Mobile */
             @media (max-width: 768px) {
                 .menu-btn { display: block; }
                 .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
@@ -256,25 +260,19 @@ async def index():
         </style>
     </head>
     <body>
-        <!-- Nút ẩn/hiện menu trên mobile -->
         <button class="menu-btn" onclick="toggleMenu()">☰ Menu</button>
 
         <div class="sidebar" id="sidebar">
-            <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool</h2>
+            <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool Auto</h2>
             
-            <label>Gmail của bạn:</label>
-            <input type="text" id="gmail-user" value="vinhvuive12312@gmail.com" placeholder="email@gmail.com">
-            
-            <label>Mật khẩu ứng dụng (App Password):</label>
-            <input type="password" id="app-password" value="dcax hnzr ffhd rqhq" placeholder="xxxx xxxx xxxx xxxx">
-            <div style="font-size: 11px; color: #888; margin-top: 5px;">
-                *Lấy tại: Quản lý tài khoản Google > Bảo mật > Mật khẩu ứng dụng.
+            <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
+                Tool sẽ tự động tạo Mail 10 phút, tự động lấy OTP, không cần bạn nhập bất cứ thứ gì. Chỉ cần bấm nút bên dưới và giải Captcha.
             </div>
 
-            <button class="btn-start" id="btn-start" onclick="startTask()">Tạo Máy Ngay</button>
+            <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
 
             <div class="email-box" id="email-box">
-                <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email đã Copy</div>
+                <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email 10 phút (Đã tự Copy)</div>
                 <input type="text" id="email-text" readonly>
             </div>
 
@@ -302,14 +300,6 @@ async def index():
             }
 
             async function startTask() {
-                const gmail = document.getElementById('gmail-user').value;
-                const appPass = document.getElementById('app-password').value;
-
-                if (!gmail || !appPass) {
-                    alert("Vui lòng nhập Gmail và Mật khẩu ứng dụng!");
-                    return;
-                }
-
                 document.getElementById('btn-start').disabled = true;
                 document.getElementById('btn-start').innerText = "Đang chạy...";
                 document.getElementById('success-box').style.display = 'none';
@@ -321,12 +311,7 @@ async def index():
                     document.getElementById('sidebar').classList.remove('active');
                 }
 
-                // Gửi thông tin lên server
-                const formData = new FormData();
-                formData.append('gmail_user', gmail);
-                formData.append('app_password', appPass);
-
-                await fetch('/api/start', { method: 'POST', body: formData });
+                await fetch('/api/start', { method: 'POST' });
                 polling = setInterval(checkStatus, 2000);
             }
 
@@ -352,7 +337,6 @@ async def index():
                         a.href = data.link;
                         a.innerText = data.link;
                         
-                        // Hiện lại menu trên mobile nếu đang ẩn
                         if(window.innerWidth <= 768) {
                             document.getElementById('sidebar').classList.add('active');
                         }
@@ -377,24 +361,18 @@ async def index():
     """
 
 @app.post("/api/start")
-async def api_start(request: Request, background_tasks: BackgroundTasks):
+async def api_start(background_tasks: BackgroundTasks):
     if state["status"] == "running":
         return {"msg": "Đang chạy"}
-    
-    form = await request.form()
-    gmail = form.get("gmail_user")
-    app_pass = form.get("app_password")
     
     state.update({
         "status": "running", 
         "email": "", 
         "link": "", 
-        "message": "Đang khởi tạo...",
-        "gmail_user": gmail,
-        "app_password": app_pass
+        "message": "Đang khởi tạo..."
     })
     
-    background_tasks.add_task(run_tool, gmail, app_pass)
+    background_tasks.add_task(run_tool)
     return {"msg": "OK"}
 
 @app.get("/api/status")
