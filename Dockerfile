@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Cài đặt thư viện hệ thống cho màn hình ảo, VNC và Playwright
 RUN apt-get update && apt-get install -y \
     xvfb \
     x11vnc \
@@ -18,14 +17,13 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Cài đặt Playwright và các dependencies của Chromium
 RUN playwright install chromium
 RUN playwright install-deps
 
-# Copy toàn bộ code vào container
+# Copy toàn bộ file vào /app
 COPY . .
 
+# Cấp quyền chạy cho start.sh
 RUN chmod +x start.sh
 
-CMD ["./start.sh"]
+CMD ["/app/start.sh"]
