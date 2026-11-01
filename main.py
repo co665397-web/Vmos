@@ -104,26 +104,42 @@ async def run_tool():
             page = await context.new_page()
 
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
-            await page.wait_for_selector('input[type="text"]', timeout=20000)
+            
+            # Chờ nút đăng nhập hiện ra để chắc chắn web đã load xong
+            await page.wait_for_selector('button:has-text("Login/Register"), button:has-text("Đăng nhập/Đăng ký")', timeout=20000)
+            await page.wait_for_timeout(2000) # Chờ popup hiện hoàn toàn
 
-            # CẢI TIẾN: Dùng fill() thay vì evaluate để React nhận diện
+            # CẢI TIẾN: Dùng Javascript đánh lừa React để điền email
             state["message"] = "Đang tự động điền email..."
-            email_input = page.locator('input[type="text"]').first
-            await email_input.fill(email)
-            await email_input.press("Enter") # Nhấn Enter cho chắc chắn
+            await page.evaluate(f'''() => {{
+                let input = document.querySelector('input[placeholder*="email" i]');
+                if (!input) {{
+                    input = Array.from(document.querySelectorAll('input')).find(i => i.type === 'text' && i.offsetParent !== null);
+                }}
+                if (input) {{
+                    let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    setter.call(input, "{email}");
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    input.blur();
+                }}
+            }}''')
             await page.wait_for_timeout(1000)
 
             # Tự động tích điều khoản
             try:
-                await page.locator('input[type="checkbox"]').first.check(force=True)
+                await page.locator('input[type="checkbox"]').first.click(force=True)
             except: pass
             
-            # CẢI TIẾN: Click nút Đăng ký (hỗ trợ cả tiếng Anh và Việt)
+            # Click nút Đăng ký
             state["message"] = "Đang bấm nút Đăng ký..."
             try:
                 await page.locator('button:has-text("Login/Register")').first.click(force=True)
             except:
-                await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
+                try:
+                    await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
+                except:
+                    await page.keyboard.press("Enter")
 
             state["message"] = "Hãy giải Captcha trên màn hình (Nên xoay ngang điện thoại). Tool đang canh mã OTP..."
             otp_found = False
@@ -233,8 +249,6 @@ async def index():
             
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
             .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%;}
-            
-            /* CSS cho iframe để nó tự phóng to hết mức */
             iframe { flex: 1; border: none; width: 100%; height: 100%; object-fit: contain; }
             
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
@@ -257,7 +271,6 @@ async def index():
                 .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
                 .sidebar.active { left: 0; }
                 .browser { width: 100%; }
-                /* Xoay ngang trên điện thoại sẽ thấy rõ hơn */
             }
         </style>
     </head>
