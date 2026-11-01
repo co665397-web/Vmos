@@ -10,7 +10,7 @@ sleep 2
 
 echo "=== Đang khởi động x11vnc ==="
 x11vnc -display :99 -nopw -listen 0.0.0.0 -forever -shared &
-sleep 2
+sleep 3
 
 echo "=== Đang khởi động FastAPI ==="
 exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
