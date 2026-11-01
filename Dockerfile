@@ -20,5 +20,8 @@ COPY . .
 # Cấp quyền thực thi cho file start.sh
 RUN chmod +x start.sh
 
+# Khai báo cổng (dự phòng)
+EXPOSE 8080
+
 # Chạy ứng dụng
 CMD ["/app/start.sh"]
