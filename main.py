@@ -27,6 +27,7 @@ state = {
 }
 
 def create_temp_email():
+    """Tạo email tạm thời qua Mail.TM"""
     try:
         r = requests.get("https://api.mail.tm/domains", verify=False)
         domains = [d["domain"] for d in r.json()["hydra:member"]]
@@ -40,12 +41,13 @@ def create_temp_email():
         return None, None
 
 def get_otp(email, password):
+    """Lấy mã OTP từ hộp thư Mail.TM"""
     try:
         token_req = requests.post("https://api.mail.tm/token", json={"address": email, "password": password}, verify=False)
         token = token_req.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        for _ in range(30):
+        for _ in range(30): # Chờ tối đa 90 giây
             r = requests.get("https://api.mail.tm/messages", headers=headers, verify=False)
             msgs = r.json().get("hydra:member", [])
             if msgs:
@@ -60,6 +62,7 @@ def get_otp(email, password):
     return None
 
 async def run_tool():
+    """Hàm chạy ngầm của Playwright"""
     global state
     state["status"] = "running"
     state["message"] = "Đang tạo email..."
@@ -85,6 +88,7 @@ async def run_tool():
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[type="text"]', timeout=20000)
 
+            # Tự động điền Email
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[type="text"]');
                 if(input) {{
@@ -94,6 +98,7 @@ async def run_tool():
                 }}
             }}''')
 
+            # Tự động tích điều khoản và bấm đăng ký
             try:
                 await page.locator('input[type="checkbox"]').first.check(force=True)
                 await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
@@ -104,6 +109,7 @@ async def run_tool():
             otp_found = False
             start_wait = time.time()
 
+            # Vòng lặp canh OTP
             while time.time() - start_wait < 300:
                 if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
                     otp_found = True
@@ -123,6 +129,7 @@ async def run_tool():
             otp = get_otp(email, password)
 
             if otp:
+                # Điền OTP
                 otp_inputs = page.locator('input[maxlength="1"]')
                 if await otp_inputs.count() > 0:
                     for i in range(6):
@@ -135,6 +142,7 @@ async def run_tool():
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
                 await page.wait_for_timeout(7000)
 
+                # Xử lý popup Trial Granted
                 try:
                     view_now = page.locator('button:has-text("View now")')
                     if await view_now.count() > 0:
@@ -159,12 +167,14 @@ async def run_tool():
                     await page.wait_for_timeout(15000)
 
                     state["message"] = "Đang tìm nút Chia sẻ..."
+                    # Tìm bánh răng
                     await page.evaluate('''() => {
                         let els = Array.from(document.querySelectorAll('svg, i, span, path, div'));
                         let gear = els.find(el => (el.getAttribute('class') || '').toLowerCase().includes('setting'));
                         if (gear) gear.click();
                     }''')
                     await page.wait_for_timeout(2000)
+                    # Bấm chữ chia sẻ
                     await page.evaluate('''() => {
                         let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === 'Chia sẻ máy đám mây');
                         if (el) el.click();
@@ -185,6 +195,7 @@ async def run_tool():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    """Giao diện web chính"""
     return """
     <!DOCTYPE html>
     <html lang="vi">
@@ -195,7 +206,7 @@ async def index():
             body { display: flex; margin: 0; height: 100vh; font-family: Arial; background: #1e1e1e; color: white; }
             .sidebar { width: 320px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 5px rgba(0,0,0,0.5); z-index: 10;}
             .browser { flex: 1; display: flex; }
-            iframe { flex: 1; border: none; width: 100%; height: 100%; }
+            iframe { flex: 1; border: none; width: 100%; height: 100%; background: #000; }
             button { padding: 12px; font-size: 16px; margin-top: 10px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; transition: 0.2s;}
             .btn-start { background: #007bff; color: white; }
             .btn-start:hover { background: #0056b3; }
@@ -232,8 +243,8 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Load giao diện VNC và kết nối websocket qua proxy /vncproxy -->
-            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&path=/vncproxy"></iframe>
+            <!-- Thêm reconnect=true&reconnect_delay=1000 để tự động kết nối lại nếu màn hình đen -->
+            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy"></iframe>
         </div>
 
         <script>
