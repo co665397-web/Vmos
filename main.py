@@ -87,38 +87,40 @@ async def run_tool():
         return
         
     state["email"] = email
-    state["message"] = "Đang khởi động điện thoại ảo (15-20s)..."
+    state["message"] = "Đang khởi động điện thoại ảo..."
 
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(
                 headless=False, 
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                args=[
+                    '--no-sandbox', 
+                    '--disable-dev-shm-usage', 
+                    '--disable-gpu',
+                    '--blink-settings=imagesEnabled=false' # Tắt ảnh để chạy nhanh hơn
+                ]
             )
             state["message"] = "Đang truy cập VMOS..."
             
-            # GIẢ LẬP ĐIỆN THOẠI (Mobile Emulation)
+            # GIẢ LẬP ĐIỆN THOẠI
             context = await browser.new_context(
-                viewport={"width": 450, "height": 800},
+                viewport={"width": 540, "height": 960},
                 user_agent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
                 is_mobile=True,
                 has_touch=True,
-                device_scale_factor=2
+                device_scale_factor=1
             )
             await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = await context.new_page()
 
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             
-            await page.wait_for_selector('button:has-text("Login/Register"), button:has-text("Đăng nhập/Đăng ký")', timeout=20000)
+            await page.wait_for_selector('input[placeholder*="email" i]', timeout=20000)
             await page.wait_for_timeout(1000)
 
-            state["message"] = "Đang tự động điền email..."
+            state["message"] = "Đang điền email..."
             await page.evaluate(f'''() => {{
                 let input = document.querySelector('input[placeholder*="email" i]');
-                if (!input) {{
-                    input = Array.from(document.querySelectorAll('input')).find(i => i.type === 'text' && i.offsetParent !== null);
-                }}
                 if (input) {{
                     let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
                     setter.call(input, "{email}");
@@ -129,39 +131,62 @@ async def run_tool():
             }}''')
             await page.wait_for_timeout(500)
 
+            # Tích điều khoản
             try:
                 await page.locator('input[type="checkbox"]').first.click(force=True)
             except: pass
             
             state["message"] = "Đang bấm nút Đăng ký..."
-            try:
-                await page.locator('button:has-text("Login/Register")').first.click(force=True)
-            except:
-                try:
-                    await page.locator('button:has-text("Đăng nhập/Đăng ký")').first.click(force=True)
-                except:
-                    await page.keyboard.press("Enter")
+            
+            # SỬA LỖI CLICK NHẦM FACEBOOK: Dùng Javascript tìm chính xác nút Đăng ký
+            clicked = await page.evaluate('''() => {
+                let btns = Array.from(document.querySelectorAll('button'));
+                // Tìm nút có chữ Login/Register hoặc Đăng nhập/Đăng ký, và KHÔNG chứa chữ Facebook/Google
+                let target = btns.find(b => {
+                    let text = b.innerText.trim();
+                    return (text === 'Login/Register' || text === 'Đăng nhập/Đăng ký') && 
+                           !text.includes('Facebook') && 
+                           !text.includes('Google');
+                });
+                if (target) {
+                    target.click();
+                    return true;
+                }
+                return false;
+            }''')
+            
+            if not clicked:
+                # Nếu không tìm thấy chữ chính xác, thử tìm nút màu xanh dương
+                await page.evaluate('''() => {
+                    let btns = Array.from(document.querySelectorAll('button'));
+                    let target = btns.find(b => b.className.includes('primary') || b.style.backgroundColor.includes('rgb'));
+                    if(target) target.click();
+                }''')
 
-            state["message"] = "Hãy giải Captcha trên màn hình (Chạm để gõ)."
+            state["message"] = "Hãy giải Captcha trên màn hình. Tool đang chờ OTP..."
             otp_found = False
             start_wait = time.time()
 
             while time.time() - start_wait < 300:
-                if await page.locator('input[maxlength="1"], input[placeholder*="OTP"]').count() > 0:
+                # Nếu thấy ô OTP
+                if await page.locator('input[maxlength="1"]').count() > 0:
                     otp_found = True
                     break
+                
+                # Nếu bị chặn IP
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn. Vui lòng tự bật VPN và thao tác thủ công."
                     return
-                await asyncio.sleep(2)
+                    
+                await asyncio.sleep(1.5)
 
             if not otp_found:
                 state["message"] = "Hết thời gian chờ OTP."
                 state["status"] = "idle"
                 return
 
-            state["message"] = "Đã thấy ô OTP. Đang tự động lấy mã từ mail..."
+            state["message"] = "Đã thấy ô OTP. Đang lấy mã từ mail..."
             otp = await asyncio.to_thread(get_otp_from_temp_mail, email, password)
 
             if otp:
@@ -179,13 +204,13 @@ async def run_tool():
                     await page.locator('button:has-text("Xác nhận")').first.click(force=True)
 
                 state["message"] = "Đăng nhập thành công. Đang vào trang quản lý..."
-                await page.wait_for_timeout(7000)
+                await page.wait_for_timeout(5000)
 
                 try:
                     view_now = page.locator('button:has-text("View now")')
                     if await view_now.count() > 0:
                         await view_now.first.click(force=True)
-                        await page.wait_for_timeout(4000)
+                        await page.wait_for_timeout(3000)
                 except: pass
 
                 state["message"] = "Đang thử nhận máy ảo..."
@@ -199,9 +224,9 @@ async def run_tool():
                         state["message"] = "IP đã bị chặn khi mua máy."
                         return
 
-                    await page.wait_for_timeout(12000)
+                    await page.wait_for_timeout(10000)
                     await page.locator('text="Máy đám mây của tôi"').first.click(force=True)
-                    await page.wait_for_timeout(15000)
+                    await page.wait_for_timeout(12000)
 
                     state["message"] = "Đang tìm nút Chia sẻ..."
                     await page.evaluate('''() => {
@@ -209,12 +234,12 @@ async def run_tool():
                         let gear = els.find(el => (el.getAttribute('class') || '').toLowerCase().includes('setting'));
                         if (gear) gear.click();
                     }''')
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(1500)
                     await page.evaluate('''() => {
                         let el = Array.from(document.querySelectorAll('*')).find(e => e.textContent.trim() === 'Chia sẻ máy đám mây');
                         if (el) el.click();
                     }''')
-                    await page.wait_for_timeout(3000)
+                    await page.wait_for_timeout(2000)
 
                     link_in = page.locator('input[readonly]')
                     if await link_in.count() > 0:
@@ -228,7 +253,7 @@ async def run_tool():
                 state["status"] = "idle"
                 state["message"] = "Không tìm thấy OTP trong mail 10 phút."
         except Exception as e:
-            state["message"] = f"Lỗi Playwright: {str(e)}"
+            state["message"] = f"Lỗi: {str(e)}"
             state["status"] = "idle"
             try:
                 await browser.close()
@@ -245,13 +270,13 @@ async def index():
         <title>VMOS Tool Auto</title>
         <style>
             * { box-sizing: border-box; }
-            body { margin: 0; padding: 0; height: 100vh; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
+            body { margin: 0; padding: 0; height: 100vh; width: 100vw; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
             
             .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
-            .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%; justify-content: center; align-items: center;}
+            .browser { flex: 1; display: flex; position: relative; background: #000; width: 100%; height: 100%; }
             
-            /* Căn giữa màn hình dọc điện thoại */
-            iframe { border: none; width: 100%; max-width: 450px; height: 100%; max-height: 800px; background: #000; box-shadow: 0 0 20px rgba(0,0,0,1);}
+            /* SỬA LỖI MÀN HÌNH BÉ: Cho iframe chiếm toàn bộ không gian */
+            iframe { width: 100%; height: 100%; border: none; display: block; }
             
             .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
             
@@ -272,9 +297,7 @@ async def index():
                 .menu-btn { display: block; }
                 .sidebar { position: absolute; left: -100%; width: 85%; height: 100vh; border-right: 1px solid #444; }
                 .sidebar.active { left: 0; }
-                .browser { width: 100%; }
-                /* Trên mobile, ép iframe full màn hình */
-                iframe { max-width: 100%; max-height: 100%; }
+                .browser { width: 100%; height: 100%; }
             }
         </style>
     </head>
@@ -285,7 +308,7 @@ async def index():
             <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool Auto</h2>
             
             <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
-                <b>💡 Hướng dẫn:</b> Màn hình bên phải đã được giả lập thành điện thoại. Bạn chỉ cần chạm trực tiếp để gõ Captcha.
+                <b>💡 Hướng dẫn:</b> Khi màn hình VNC hiện ra, hãy chạm và kéo để giải Captcha.
             </div>
 
             <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
@@ -308,7 +331,7 @@ async def index():
         </div>
 
         <div class="browser">
-            <!-- Thêm view_only=0 và resize=scale -->
+            <!-- Thêm resize=scale và view_only=0 -->
             <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy&view_only=0"></iframe>
         </div>
 
