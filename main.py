@@ -21,7 +21,7 @@ state = {
     "email": "",
     "link": "",
     "message": "Chưa chạy",
-    "show_vnc": False # Cờ bật/tắt khung Captcha
+    "show_vnc": False
 }
 
 def create_temp_email():
@@ -158,9 +158,6 @@ async def run_tool():
                 return false;
             }''')
 
-            # ==========================================
-            # BẬT POPUP CAPTCHA LÊN
-            # ==========================================
             state["show_vnc"] = True
             state["message"] = "Vui lòng giải Captcha trên khung hình nổi..."
             
@@ -169,13 +166,11 @@ async def run_tool():
             start_wait = time.time()
 
             while time.time() - start_wait < 300:
-                # Nếu thấy ô OTP -> Giải xong -> Tắt popup
                 if await page.locator('input[maxlength="1"]').count() > 0:
                     otp_found = True
                     state["show_vnc"] = False 
                     break
                 
-                # Nếu bị chặn IP -> Tắt popup
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn."
@@ -190,9 +185,6 @@ async def run_tool():
                 state["show_vnc"] = False
                 return
 
-            # ==========================================
-            # XỬ LÝ NGẦM SAU KHI CÓ OTP
-            # ==========================================
             state["message"] = "Đã giải Captcha xong. Đang lấy mã từ mail..."
             otp = await asyncio.to_thread(get_otp_from_temp_mail, email, password)
 
@@ -224,7 +216,6 @@ async def run_tool():
                     await claim_btn.first.click(force=True)
                     await page.wait_for_timeout(3000)
 
-                    # NẾU LỖI IP -> BÁO ĐỎ ĐỂ WEB TỰ CHUYỂN TRANG
                     if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                         state["status"] = "error_ip"
                         state["message"] = "IP đã bị chặn. Hãy mua thủ công."
@@ -299,7 +290,6 @@ async def index():
 
             .btn-vpn { background: #dc3545; color: white; display: none; text-decoration: none; text-align: center; margin-top: 15px; padding: 15px; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 10px rgba(220,53,69,0.4);}
             
-            /* POPUP CAPTCHA (KHUNG NỔI) */
             .vnc-modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1000; background: rgba(0,0,0,0.9); flex-direction: column; }
             .vnc-header { padding: 15px; background: #2d2d2d; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444;}
             .vnc-header span { color: #ffc107; font-weight: bold; font-size: 16px;}
@@ -329,14 +319,12 @@ async def index():
                     <a id="share-link" href="#" target="_blank"></a>
                 </div>
 
-                <!-- NÚT TỰ CHUYỂN TRANG NẾU LỖI -->
                 <a href="https://cloud.vmoscloud.com" target="_blank" class="btn-vpn" id="btn-vpn">
                     ⚠️ Lỗi IP. Bấm vào đây để mở VMOS và tự mua bằng VPN.
                 </a>
             </div>
         </div>
 
-        <!-- KHUNG POPUP CAPTCHA -->
         <div class="vnc-modal" id="vnc-modal">
             <div class="vnc-header">
                 <span>✍️ Chạm & Kéo để giải Captcha</span>
@@ -364,7 +352,7 @@ async def index():
                 const modal = document.getElementById('vnc-modal');
                 const iframe = document.getElementById('vnc-iframe');
                 modal.style.display = 'none';
-                iframe.src = 'about:blank'; // Ngắt kết nối để đỡ tốn mạng
+                iframe.src = 'about:blank'; 
             }
 
             async function startTask() {
@@ -392,7 +380,6 @@ async def index():
                         navigator.clipboard.writeText(data.email).catch(e => console.log('Lỗi copy:', e));
                     }
 
-                    // TỰ ĐỘNG BẬT/TẮT POPUP CAPTCHA THEO LỆNH TỪ SERVER
                     if (data.show_vnc) {
                         if (document.getElementById('vnc-modal').style.display !== 'flex') {
                             openVnc();
@@ -418,6 +405,38 @@ async def index():
                         document.getElementById('btn-start').innerText = "Thử Lại";
                         document.getElementById('btn-vpn').style.display = 'block';
                         
-                        // TỰ ĐỘNG CHUYỂN HƯỚNG SANG TRANG VMOS THẬT
                         setTimeout(() => {
-        
+                            window.location.href = "https://cloud.vmoscloud.com";
+                        }, 2000);
+                    }
+                } catch (e) {
+                    console.log("Đang chờ server...");
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+@app.post("/api/start")
+async def api_start(background_tasks: BackgroundTasks):
+    if state["status"] == "running":
+        return {"msg": "Đang chạy"}
+    
+    state.update({
+        "status": "running", 
+        "email": "", 
+        "link": "", 
+        "message": "Đang khởi tạo...",
+        "show_vnc": False
+    })
+    
+    background_tasks.add_task(run_tool)
+    return {"msg": "OK"}
+
+@app.get("/api/status")
+async def api_status():
+    return state
+
+@app.websocket("/vncproxy")
+async def websocket_pro
