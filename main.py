@@ -20,7 +20,8 @@ state = {
     "status": "idle",
     "email": "",
     "link": "",
-    "message": "Chưa chạy"
+    "message": "Chưa chạy",
+    "show_vnc": False # CỜ BÁO HIỆN MÀN HÌNH VNC
 }
 
 def create_temp_email():
@@ -91,11 +92,10 @@ async def run_tool():
 
     async with async_playwright() as p:
         try:
-            # SỬ DỤNG --kiosk ĐỂ ÉP TOÀN MÀN HÌNH (XÓA THANH ĐỊA CHỈ)
             browser = await p.chromium.launch(
                 headless=False, 
                 args=[
-                    '--kiosk', # Chế độ toàn màn hình
+                    '--kiosk', 
                     '--no-sandbox', 
                     '--disable-dev-shm-usage', 
                     '--disable-gpu',
@@ -116,7 +116,7 @@ async def run_tool():
 
             await page.goto("https://cloud.vmoscloud.com", timeout=60000)
             await page.wait_for_selector('input[placeholder*="email" i]', timeout=30000)
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(1000)
 
             state["message"] = "Đang điền email..."
             await page.evaluate(f'''() => {{
@@ -130,8 +130,7 @@ async def run_tool():
                 }}
             }}''')
             
-            # Chờ React kích hoạt nút Đăng ký
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(1500)
 
             state["message"] = "Đang tích Điều khoản..."
             await page.evaluate('''() => {
@@ -145,54 +144,58 @@ async def run_tool():
 
             state["message"] = "Đang bấm nút Đăng ký..."
             
-            # SỬA LỖI CLICK FACEBOOK: Tìm cực kỳ chính xác
             clicked = await page.evaluate('''() => {
-                // Tìm tất cả các nút hoặc thẻ giả lập nút
                 let els = Array.from(document.querySelectorAll('button, div[role="button"], span, a'));
-                
                 let target = els.find(el => {
                     let text = (el.innerText || el.textContent || "").trim();
                     let lowerText = text.toLowerCase();
-                    
-                    // Điều kiện: Phải chứa chữ Login/Register hoặc Đăng nhập/Đăng ký
                     let isTarget = (text === 'Login/Register' || text === 'Đăng nhập/Đăng ký');
-                    
-                    // Loại trừ: Không chứa chữ Facebook hay Google
                     let isNotSocial = !lowerText.includes('facebook') && !lowerText.includes('google');
-                    
-                    // Phải đang hiển thị trên màn hình
                     let isVisible = el.offsetParent !== null;
-                    
                     return isTarget && isNotSocial && isVisible;
                 });
-                
-                if (target) {
-                    target.click();
-                    return true;
-                }
+                if (target) { target.click(); return true; }
                 return false;
             }''')
 
-            state["message"] = "Hãy giải Captcha trên màn hình. Tool đang chờ OTP..."
+            # ==========================================
+            # KHU VỰC CẦN CAPTCHA: BẬT MÀN HÌNH VNC LÊN
+            # ==========================================
+            state["show_vnc"] = True
+            state["message"] = "Hãy giải Captcha trên màn hình. Tool đang đợi bạn..."
+            
+            # Đợi 2 giây cho Captcha load xong
+            await page.wait_for_timeout(2000)
+
             otp_found = False
             start_wait = time.time()
 
             while time.time() - start_wait < 300:
+                # Nếu thấy ô OTP -> Giải xong -> Tắt màn hình VNC
                 if await page.locator('input[maxlength="1"]').count() > 0:
                     otp_found = True
+                    state["show_vnc"] = False 
                     break
+                
+                # Nếu bị chặn IP -> Tắt màn hình VNC
                 if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                     state["status"] = "error_ip"
                     state["message"] = "IP đã bị chặn. Vui lòng tự bật VPN và thao tác thủ công."
+                    state["show_vnc"] = False
                     return
+                    
                 await asyncio.sleep(1.5)
 
             if not otp_found:
                 state["message"] = "Hết thời gian chờ OTP."
                 state["status"] = "idle"
+                state["show_vnc"] = False
                 return
 
-            state["message"] = "Đã thấy ô OTP. Đang lấy mã từ mail..."
+            # ==========================================
+            # ĐÃ GIẢI XONG CAPTCHA: TIẾP TỤC CHẠY NGẦM
+            # ==========================================
+            state["message"] = "Đã giải Captcha xong. Đang lấy mã từ mail..."
             otp = await asyncio.to_thread(get_otp_from_temp_mail, email, password)
 
             if otp:
@@ -227,6 +230,7 @@ async def run_tool():
                     if await page.locator('text="Số người nhận quá nhiều"').count() > 0:
                         state["status"] = "error_ip"
                         state["message"] = "IP đã bị chặn khi mua máy."
+                        state["show_vnc"] = False
                         return
 
                     await page.wait_for_timeout(10000)
@@ -260,6 +264,7 @@ async def run_tool():
         except Exception as e:
             state["message"] = f"Lỗi: {str(e)}"
             state["status"] = "idle"
+            state["show_vnc"] = False
             try:
                 await browser.close()
             except: pass
@@ -272,24 +277,24 @@ async def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>VMOS Tool Auto</title>
+        <title>VMOS Bot Auto</title>
         <style>
             * { box-sizing: border-box; }
-            body { margin: 0; padding: 0; height: 100vh; width: 100vw; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; overflow: hidden; }
+            body { margin: 0; padding: 0; height: 100vh; width: 100vw; font-family: Arial, sans-serif; background: #1e1e1e; color: white; display: flex; flex-direction: column; overflow: hidden; }
             
-            .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 20; transition: 0.3s; height: 100%; overflow-y: auto;}
-            .browser { flex: 1; position: relative; background: #000; width: 100%; height: 100%; overflow: hidden;}
+            .main-layout { display: flex; height: 100%; width: 100%; }
             
-            /* ÉP IFRAME PHỦ KÍN VÀ KHÔNG BỊ VIỀN */
-            iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; display: block; }
+            .sidebar { width: 350px; padding: 20px; background: #2d2d2d; display: flex; flex-direction: column; box-shadow: 2px 0 10px rgba(0,0,0,0.8); z-index: 10; height: 100%; overflow-y: auto;}
+            .content { flex: 1; display: flex; justify-content: center; align-items: center; text-align: center; color: #666; background: #151515; padding: 20px;}
             
-            .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 30; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
+            .menu-btn { display: none; position: absolute; top: 10px; left: 10px; z-index: 40; background: #007bff; color: white; border: none; padding: 10px 15px; font-size: 20px; border-radius: 5px; cursor: pointer; opacity: 0.8;}
             
-            button.btn-start { padding: 12px; font-size: 16px; margin-top: 20px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; background: #007bff; color: white; transition: 0.2s;}
+            button.btn-start { padding: 15px; font-size: 16px; margin-top: 20px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; background: #007bff; color: white; transition: 0.2s; width: 100%;}
             button.btn-start:hover { background: #0056b3; }
             button.btn-start:disabled { background: #555; cursor: not-allowed; }
             
             .btn-vpn { background: #dc3545; color: white; display: none; text-decoration: none; text-align: center; margin-top: 15px; padding: 12px; border-radius: 5px; font-weight: bold;}
+            .btn-manual-vnc { background: #6c757d; color: white; display: block; text-align: center; margin-top: 15px; padding: 10px; border-radius: 5px; cursor: pointer; border: none; width: 100%; font-weight: bold;}
             
             .email-box { background: #444; padding: 10px; border-radius: 5px; margin-top: 15px; display: none; border: 1px solid #555;}
             .email-box input { border: none; background: transparent; text-align: center; color: #00ff00; font-weight: bold; width: 100%; font-size: 16px;}
@@ -298,51 +303,95 @@ async def index():
             .success-box { background: #28a745; color: white; padding: 15px; border-radius: 5px; margin-top: 15px; display: none; word-break: break-all; }
             .success-box a { color: #fff; font-weight: bold; text-decoration: underline; }
 
+            /* LỚP PHỦ VNC BÍ MẬT (Chỉ hiện khi cần) */
+            #vnc-container { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; background: #000; }
+            #vnc-container iframe { width: 100%; height: 100%; border: none; display: block; }
+            .vnc-header { position: absolute; top: 10px; right: 10px; z-index: 110; display: flex; gap: 10px; }
+            .vnc-header button { padding: 10px 15px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; }
+            .vnc-close { background: #dc3545; color: white; }
+            .vnc-note { position: absolute; top: 10px; left: 10px; z-index: 110; background: rgba(0,0,0,0.8); color: #00ff00; padding: 5px 10px; border-radius: 5px; font-size: 14px; pointer-events: none;}
+
             @media (max-width: 768px) {
                 .menu-btn { display: block; }
-                .sidebar { position: absolute; left: -100%; width: 85%; height: 100%; border-right: 1px solid #444; }
+                .sidebar { position: absolute; left: -100%; width: 85%; height: 100%; border-right: 1px solid #444; z-index: 20;}
                 .sidebar.active { left: 0; }
+                .content { width: 100%; }
             }
         </style>
     </head>
     <body>
         <button class="menu-btn" onclick="toggleMenu()">☰ Menu</button>
 
-        <div class="sidebar" id="sidebar">
-            <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Tool Auto</h2>
-            
-            <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
-                <b>💡 Hướng dẫn:</b> Khi màn hình VNC hiện ra, hãy chạm và kéo để giải Captcha.
+        <div class="main-layout">
+            <div class="sidebar" id="sidebar">
+                <h2 style="margin-top:0; color:#007bff; text-align: center;">VMOS Bot Auto</h2>
+                
+                <div style="font-size: 13px; color: #aaa; margin-bottom: 10px; text-align: center;">
+                    Tool chạy ngầm 100%.<br>Màn hình sẽ <b>tự động bật lên</b> khi cần giải Captcha.
+                </div>
+
+                <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
+
+                <div class="email-box" id="email-box">
+                    <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email 10 phút (Đã tự Copy)</div>
+                    <input type="text" id="email-text" readonly>
+                </div>
+
+                <div class="message" id="message">Chưa có tiến trình nào.</div>
+
+                <div class="success-box" id="success-box">
+                    <div style="font-size:14px; margin-bottom:8px;">Link chia sẻ của bạn:</div>
+                    <a id="share-link" href="#" target="_blank"></a>
+                </div>
+
+                <a href="https://cloud.vmoscloud.com" target="_blank" class="btn-vpn" id="btn-vpn">
+                    ⚠️ IP Bị Chặn. Bấm vào đây để mở Web thật, bật VPN và tự mua.
+                </a>
+                
+                <button class="btn-manual-vnc" onclick="toggleVnc(true)">👁️ Xem màn hình (Thủ công)</button>
             </div>
 
-            <button class="btn-start" id="btn-start" onclick="startTask()">Bắt Đầu Tạo Máy</button>
-
-            <div class="email-box" id="email-box">
-                <div style="font-size:12px; text-align:center; color:#ccc; margin-bottom:5px;">Email 10 phút (Đã tự Copy)</div>
-                <input type="text" id="email-text" readonly>
+            <div class="content">
+                <div>
+                    <h1>🤖</h1>
+                    <h2>Bot đang chạy ngầm...</h2>
+                    <p>Bạn không cần làm gì cả.</p>
+                    <p>Khi nào trang web yêu cầu Captcha,<br>màn hình VNC sẽ <b>tự động bật lên</b>.<br>Giải xong nó sẽ tự tắt.</p>
+                </div>
             </div>
-
-            <div class="message" id="message">Chưa có tiến trình nào.</div>
-
-            <div class="success-box" id="success-box">
-                <div style="font-size:14px; margin-bottom:8px;">Link chia sẻ của bạn:</div>
-                <a id="share-link" href="#" target="_blank"></a>
-            </div>
-
-            <a href="https://cloud.vmoscloud.com" target="_blank" class="btn-vpn" id="btn-vpn">
-                ⚠️ IP Bị Chặn. Bấm vào đây để mở Web thật, bật VPN và tự mua.
-            </a>
         </div>
 
-        <div class="browser">
-            <iframe id="vnc" src="/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy&view_only=0"></iframe>
+        <!-- Lớp phủ VNC -->
+        <div id="vnc-container">
+            <div class="vnc-note">✍️ Chạm và kéo để giải Captcha</div>
+            <div class="vnc-header">
+                <button class="vnc-close" onclick="toggleVnc(false)">Đóng</button>
+            </div>
+            <iframe id="vnc" src="about:blank"></iframe>
         </div>
 
         <script>
             let polling;
+            const vncSrc = "/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&path=/vncproxy&view_only=0";
             
             function toggleMenu() {
                 document.getElementById('sidebar').classList.toggle('active');
+            }
+
+            function toggleVnc(show) {
+                const container = document.getElementById('vnc-container');
+                const iframe = document.getElementById('vnc');
+                if (show) {
+                    container.style.display = 'block';
+                    // Chỉ kết nối WebSocket khi hiển thị
+                    if (iframe.src === 'about:blank' || iframe.src === window.location.href) {
+                        iframe.src = vncSrc;
+                    }
+                } else {
+                    container.style.display = 'none';
+                    // Ngắt kết nối để tiết kiệm dữ liệu mạng
+                    iframe.src = 'about:blank'; 
+                }
             }
 
             async function startTask() {
@@ -351,6 +400,7 @@ async def index():
                 document.getElementById('success-box').style.display = 'none';
                 document.getElementById('btn-vpn').style.display = 'none';
                 document.getElementById('email-box').style.display = 'none';
+                toggleVnc(false); // Tắt VNC nếu đang mở
 
                 if(window.innerWidth <= 768) {
                     document.getElementById('sidebar').classList.remove('active');
@@ -370,88 +420,4 @@ async def index():
                     if (data.email && document.getElementById('email-box').style.display === 'none') {
                         document.getElementById('email-box').style.display = 'block';
                         document.getElementById('email-text').value = data.email;
-                        navigator.clipboard.writeText(data.email).catch(e => console.log('Lỗi copy:', e));
-                    }
-
-                    if (data.status === 'success') {
-                        clearInterval(polling);
-                        document.getElementById('btn-start').disabled = false;
-                        document.getElementById('btn-start').innerText = "Tạo Máy Mới";
-                        document.getElementById('success-box').style.display = 'block';
-                        let a = document.getElementById('share-link');
-                        a.href = data.link;
-                        a.innerText = data.link;
-                        
-                        if(window.innerWidth <= 768) {
-                            document.getElementById('sidebar').classList.add('active');
-                        }
-                    }
-                    else if (data.status === 'error_ip') {
-                        clearInterval(polling);
-                        document.getElementById('btn-start').disabled = false;
-                        document.getElementById('btn-start').innerText = "Thử Lại";
-                        document.getElementById('btn-vpn').style.display = 'block';
-                        
-                        if(window.innerWidth <= 768) {
-                            document.getElementById('sidebar').classList.add('active');
-                        }
-                    }
-                } catch (e) {
-                    console.log("Đang chờ server...");
-                }
-            }
-        </script>
-    </body>
-    </html>
-    """
-
-@app.post("/api/start")
-async def api_start(background_tasks: BackgroundTasks):
-    if state["status"] == "running":
-        return {"msg": "Đang chạy"}
-    
-    state.update({
-        "status": "running", 
-        "email": "", 
-        "link": "", 
-        "message": "Đang khởi tạo..."
-    })
-    
-    background_tasks.add_task(run_tool)
-    return {"msg": "OK"}
-
-@app.get("/api/status")
-async def api_status():
-    return state
-
-@app.websocket("/vncproxy")
-async def websocket_proxy(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        reader, writer = await asyncio.open_connection('127.0.0.1', 5900)
-
-        async def ws_to_tcp():
-            try:
-                while True:
-                    data = await websocket.receive_bytes()
-                    writer.write(data)
-                    await writer.drain()
-            except: pass
-
-        async def tcp_to_ws():
-            try:
-                while True:
-                    data = await reader.read(4096)
-                    if not data:
-                        break
-                    await websocket.send_bytes(data)
-            except: pass
-
-        await asyncio.gather(ws_to_tcp(), tcp_to_ws())
-    except Exception as e:
-        print("VNC Proxy Error:", e)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except: pass
+                 
